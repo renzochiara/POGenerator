@@ -4,7 +4,6 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-# LLM Integration (Groq via OpenAI Client)
 try:
     from openai import OpenAI
     HAS_OPENAI = True
@@ -20,7 +19,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom Indigo Theme Styling
 st.markdown("""
     <style>
     .stButton>button {
@@ -103,15 +101,13 @@ TEXTS = {
 }
 
 EXCEL_FILE = "po_log.xlsx"
-
-# Embedded Indigo Park Canada Logo URL
 INDIGO_LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/Indigo_Group_logo.svg/320px-Indigo_Group_logo.svg.png"
 
 # ==========================================
 # HELPER FUNCTIONS
 # ==========================================
 def get_groq_api_key():
-    """Reads GROQ_API_KEY exclusively from Streamlit Secrets (or environment)."""
+    """Reads GROQ_API_KEY from Streamlit Secrets (or environment)."""
     try:
         if "GROQ_API_KEY" in st.secrets and st.secrets["GROQ_API_KEY"]:
             return str(st.secrets["GROQ_API_KEY"]).strip()
@@ -119,18 +115,42 @@ def get_groq_api_key():
         pass
     return os.environ.get("GROQ_API_KEY", "").strip()
 
+def resolve_groq_model(client):
+    """Finds an available chat model on the account using Groq's /models endpoint."""
+    preferred_models = [
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+    ]
+    try:
+        models_resp = client.models.list()
+        available_ids = [m.id for m in getattr(models_resp, "data", []) if getattr(m, "id", None)]
+
+        for model_id in preferred_models:
+            if model_id in available_ids:
+                return model_id
+
+        # Skip audio/whisper/guard models if choosing a general fallback
+        excluded_prefixes = ("whisper", "canopylabs", "meta-llama/llama-prompt-guard")
+        for model_id in available_ids:
+            if not model_id.startswith(excluded_prefixes):
+                return model_id
+    except Exception:
+        pass
+
+    return "openai/gpt-oss-20b"
+
 def load_po_data():
     """Loads existing PO data from Excel or creates a new DataFrame."""
     if os.path.exists(EXCEL_FILE):
         return pd.read_excel(EXCEL_FILE)
-    else:
-        columns = [
-            "PO Number", "Date", "CMO Code", "Vendor", "Category",
-            "Priority", "Estimated Cost ($)", "Reason", "Requested By", "Status"
-        ]
-        df = pd.DataFrame(columns=columns)
-        df.to_excel(EXCEL_FILE, index=False)
-        return df
+    columns = [
+        "PO Number", "Date", "CMO Code", "Vendor", "Category",
+        "Priority", "Estimated Cost ($)", "Reason", "Requested By", "Status"
+    ]
+    df = pd.DataFrame(columns=columns)
+    df.to_excel(EXCEL_FILE, index=False)
+    return df
 
 def save_po_data(df):
     """Saves DataFrame to local Excel log."""
@@ -161,6 +181,7 @@ def query_groq_ai(query, df, missing_secret_msg):
             api_key=api_key,
             base_url="https://api.groq.com/openai/v1"
         )
+        model_name = resolve_groq_model(client)
 
         prompt = f"""
         You are an operational PO search assistant for Indigo Park Canada.
@@ -174,19 +195,18 @@ def query_groq_ai(query, df, missing_secret_msg):
         """
 
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=model_name,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1
         )
-        return response.choices[0].message.content
+        answer = response.choices[0].message.content
+        return f"{answer}\n\n*Model used: `{model_name}`*"
     except Exception as e:
         return f"⚠️ Groq API Connection Error: {str(e)}"
 
 # ==========================================
 # APP LAYOUT
 # ==========================================
-
-# Sidebar Logo & Language Toggle
 st.sidebar.image(INDIGO_LOGO_URL, width=200)
 st.sidebar.markdown("---")
 lang = st.sidebar.radio("Language / Langue", ["EN", "FR"], horizontal=True)
