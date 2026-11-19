@@ -4,7 +4,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-# LLM integration (compatible with Groq, Mistral, OpenAI)
+# LLM Integration (Groq via OpenAI Client)
 try:
     from openai import OpenAI
     HAS_OPENAI = True
@@ -12,10 +12,10 @@ except ImportError:
     HAS_OPENAI = False
 
 # ==========================================
-# DEFAULT API KEY CONFIGURATION
+# GROQ API KEY CONFIGURATION
 # ==========================================
-# Replace "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" with your actual key.
-DEFAULT_AI_KEY = "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"
+# Paste your Groq key here (starts with 'gsk_'):
+GROQ_API_KEY = "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"
 
 # ==========================================
 # PAGE CONFIG & STYLING
@@ -63,9 +63,7 @@ TEXTS = {
         "search_label": "Filter by CMO Code or Vendor:",
         "download_excel": "📥 Download Full PO Log (Excel)",
         "ai_header": "Ask AI to Search POs",
-        "ai_placeholder": "e.g., Find all POs for CMO 1851 or calls to Logic Control...",
-        "ai_key_label": "API Key (Optional override)",
-        "ai_provider": "AI Provider Choice"
+        "ai_placeholder": "e.g., Find all POs for CMO 1851 or calls to Logic Control..."
     },
     "FR": {
         "title": "Indigo Park Canada - Générateur de Bon de Commande",
@@ -86,9 +84,7 @@ TEXTS = {
         "search_label": "Filtrer par code CMO ou fournisseur:",
         "download_excel": "📥 Télécharger le registre complet (Excel)",
         "ai_header": "Interroger l'IA sur les PO",
-        "ai_placeholder": "ex: Trouve tous les PO du CMO 1851 ou les appels faits à Logic Control...",
-        "ai_key_label": "Clé API (Optionnelle)",
-        "ai_provider": "Choix du fournisseur IA"
+        "ai_placeholder": "ex: Trouve tous les PO du CMO 1851 ou les appels faits à Logic Control..."
     }
 }
 
@@ -120,30 +116,22 @@ def generate_po_number():
     rand_id = random.randint(1000, 9999)
     return f"PO-{today}-{rand_id}"
 
-def query_ai_assistant(query, df, user_key, provider):
-    """Answers search queries against PO log using an LLM or local keyword fallback."""
+def query_groq_ai(query, df):
+    """Answers search queries against PO log using Groq Llama 3 or local keyword fallback."""
     if df.empty:
         return "No PO records exist in the log yet."
     
     context_str = df.to_string(index=False)
     
-    # Priority order: UI Input Key -> Hardcoded DEFAULT_AI_KEY -> Streamlit Secrets
-    active_key = user_key or DEFAULT_AI_KEY or st.secrets.get("AI_API_KEY", "")
+    # Check for Groq API Key (either hardcoded or in Streamlit secrets)
+    active_key = GROQ_API_KEY or st.secrets.get("GROQ_API_KEY", "")
 
-    if active_key and active_key != "YOUR_HARDCODED_API_KEY_HERE" and HAS_OPENAI:
+    if active_key and active_key != "gsk_your_actual_groq_key_here" and HAS_OPENAI:
         try:
-            base_urls = {
-                "Groq (Llama 3)": "https://api.groq.com/openai/v1",
-                "Mistral AI": "https://api.mistral.ai/v1",
-                "OpenAI": "https://api.openai.com/v1"
-            }
-            models = {
-                "Groq (Llama 3)": "llama-3.3-70b-versatile",
-                "Mistral AI": "mistral-small-latest",
-                "OpenAI": "gpt-4o-mini"
-            }
-            
-            client = OpenAI(api_key=active_key, base_url=base_urls.get(provider))
+            client = OpenAI(
+                api_key=active_key,
+                base_url="https://api.groq.com/openai/v1"
+            )
             
             prompt = f"""
             You are an operational PO search assistant for Indigo Park Canada.
@@ -157,15 +145,15 @@ def query_ai_assistant(query, df, user_key, provider):
             """
             
             response = client.chat.completions.create(
-                model=models.get(provider, "mistral-small-latest"),
+                model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1
             )
             return response.choices[0].message.content
         except Exception as e:
-            return f"⚠️ API Error: {str(e)}\n\nRunning standard keyword search fallback..."
+            return f"⚠️ Groq API Connection Error: {str(e)}\n\nRunning keyword search fallback instead..."
 
-    # Fallback search if no key is provided
+    # Keyword search fallback if key isn't provided
     query_lower = query.lower()
     matches = df[df.apply(lambda row: query_lower in str(row.values).lower(), axis=1)]
     
@@ -177,7 +165,7 @@ def query_ai_assistant(query, df, user_key, provider):
 # APP LAYOUT
 # ==========================================
 
-# Sidebar
+# Sidebar Logo & Language Toggle
 st.sidebar.image(INDIGO_LOGO_URL, width=200)
 st.sidebar.markdown("---")
 lang = st.sidebar.radio("Language / Langue", ["EN", "FR"], horizontal=True)
@@ -263,14 +251,9 @@ with tab2:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-# --- TAB 3: AI SEARCH ASSISTANT ---
+# --- TAB 3: AI SEARCH ASSISTANT (GROQ) ---
 with tab3:
     st.subheader(t["ai_tab"])
-    
-    col_ai1, col_ai2 = st.columns([1, 2])
-    with col_ai1:
-        ai_provider = st.selectbox(t["ai_provider"], ["Mistral AI", "Groq (Llama 3)", "OpenAI"])
-        user_key = st.text_input(t["ai_key_label"], type="password", help="Leave blank to use pre-configured key.")
     
     ai_query = st.text_input(t["ai_header"], placeholder=t["ai_placeholder"])
     
@@ -279,8 +262,8 @@ with tab3:
             st.warning("Please enter a search question.")
         else:
             df = load_po_data()
-            with st.spinner("Analyzing PO database..."):
-                result = query_ai_assistant(ai_query, df, user_key, ai_provider)
+            with st.spinner("Asking AI Assistant..."):
+                result = query_groq_ai(ai_query, df)
                 
                 if isinstance(result, str):
                     st.markdown(result)
