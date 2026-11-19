@@ -12,12 +12,6 @@ except ImportError:
     HAS_OPENAI = False
 
 # ==========================================
-# GROQ API KEY CONFIGURATION
-# ==========================================
-# Paste your Groq key here (starts with 'gsk_'):
-GROQ_API_KEY = "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"
-
-# ==========================================
 # PAGE CONFIG & STYLING
 # ==========================================
 st.set_page_config(
@@ -63,7 +57,17 @@ TEXTS = {
         "search_label": "Filter by CMO Code or Vendor:",
         "download_excel": "📥 Download Full PO Log (Excel)",
         "ai_header": "Ask AI to Search POs",
-        "ai_placeholder": "e.g., Find all POs for CMO 1851 or calls to Logic Control..."
+        "ai_placeholder": "e.g., Find all POs for CMO 1851 or calls to Logic Control...",
+        "ai_search_btn": "🔍 Search with AI",
+        "ai_help_title": "What can the AI Search Assistant do?",
+        "ai_help_body": (
+            "The AI Search Assistant reads your saved Purchase Order log and answers questions in plain language:\n"
+            "- **Find by CMO / Lot Code:** *\"Show all POs for 1851 Sherbrooke\"* or *\"List POs for Forum\"*\n"
+            "- **Filter by Vendor:** *\"Which service calls did we log for Logic Control?\"*\n"
+            "- **Search by Date or Priority:** *\"Show emergency POs from this month\"* or *\"POs created on 2026-11-19\"*\n"
+            "- **Check Costs & Reasons:** *\"What was the estimated cost for gate repairs?\"*"
+        ),
+        "missing_secret": "Groq API key is not configured yet. Add `GROQ_API_KEY` in Streamlit Secrets to enable AI search."
     },
     "FR": {
         "title": "Indigo Park Canada - Générateur de Bon de Commande",
@@ -84,7 +88,17 @@ TEXTS = {
         "search_label": "Filtrer par code CMO ou fournisseur:",
         "download_excel": "📥 Télécharger le registre complet (Excel)",
         "ai_header": "Interroger l'IA sur les PO",
-        "ai_placeholder": "ex: Trouve tous les PO du CMO 1851 ou les appels faits à Logic Control..."
+        "ai_placeholder": "ex: Trouve tous les PO du CMO 1851 ou les appels faits à Logic Control...",
+        "ai_search_btn": "🔍 Rechercher avec l'IA",
+        "ai_help_title": "Que peut faire l'Assistant Recherche IA ?",
+        "ai_help_body": (
+            "L'Assistant Recherche IA lit votre registre de bons de commande et répond à vos questions :\n"
+            "- **Recherche par code CMO / stationnement :** *« Montre tous les PO pour 1851 Sherbrooke »* ou *« PO du Forum »*\n"
+            "- **Filtrer par fournisseur :** *« Quels appels de service avons-nous faits à Logic Control ? »*\n"
+            "- **Recherche par date ou priorité :** *« Montre les PO urgents ou d'urgence »* ou *« PO du 2026-11-19 »*\n"
+            "- **Vérifier coûts et raisons :** *« Quel est le coût estimé pour les réparations de barrières ? »*"
+        ),
+        "missing_secret": "La clé API Groq n'est pas encore configurée. Ajoutez `GROQ_API_KEY` dans les Secrets Streamlit pour activer la recherche IA."
     }
 }
 
@@ -96,12 +110,24 @@ INDIGO_LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/Ind
 # ==========================================
 # HELPER FUNCTIONS
 # ==========================================
+def get_groq_api_key():
+    """Reads GROQ_API_KEY exclusively from Streamlit Secrets (or environment)."""
+    try:
+        if "GROQ_API_KEY" in st.secrets and st.secrets["GROQ_API_KEY"]:
+            return str(st.secrets["GROQ_API_KEY"]).strip()
+    except Exception:
+        pass
+    return os.environ.get("GROQ_API_KEY", "").strip()
+
 def load_po_data():
     """Loads existing PO data from Excel or creates a new DataFrame."""
     if os.path.exists(EXCEL_FILE):
         return pd.read_excel(EXCEL_FILE)
     else:
-        columns = ["PO Number", "Date", "CMO Code", "Vendor", "Category", "Priority", "Estimated Cost ($)", "Reason", "Requested By", "Status"]
+        columns = [
+            "PO Number", "Date", "CMO Code", "Vendor", "Category",
+            "Priority", "Estimated Cost ($)", "Reason", "Requested By", "Status"
+        ]
         df = pd.DataFrame(columns=columns)
         df.to_excel(EXCEL_FILE, index=False)
         return df
@@ -116,50 +142,45 @@ def generate_po_number():
     rand_id = random.randint(1000, 9999)
     return f"PO-{today}-{rand_id}"
 
-def query_groq_ai(query, df):
-    """Answers search queries against PO log using Groq Llama 3 or local keyword fallback."""
+def query_groq_ai(query, df, missing_secret_msg):
+    """Answers search queries against PO log using Groq via Streamlit Secrets."""
     if df.empty:
         return "No PO records exist in the log yet."
-    
+
+    api_key = get_groq_api_key()
+    if not api_key:
+        return f"⚠️ {missing_secret_msg}"
+
+    if not HAS_OPENAI:
+        return "⚠️ The `openai` package is not installed. Add `openai` to `requirements.txt`."
+
     context_str = df.to_string(index=False)
-    
-    # Check for Groq API Key (either hardcoded or in Streamlit secrets)
-    active_key = GROQ_API_KEY or st.secrets.get("GROQ_API_KEY", "")
 
-    if active_key and active_key != "gsk_your_actual_groq_key_here" and HAS_OPENAI:
-        try:
-            client = OpenAI(
-                api_key=active_key,
-                base_url="https://api.groq.com/openai/v1"
-            )
-            
-            prompt = f"""
-            You are an operational PO search assistant for Indigo Park Canada.
-            Here is the complete current Purchase Order dataset:
-            
-            {context_str}
-            
-            User Question: {query}
-            
-            Answer clearly and concisely. List matching PO Numbers, Dates, CMO Codes, Vendors, Costs, and Reason details.
-            """
-            
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            return f"⚠️ Groq API Connection Error: {str(e)}\n\nRunning keyword search fallback instead..."
+    try:
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1"
+        )
 
-    # Keyword search fallback if key isn't provided
-    query_lower = query.lower()
-    matches = df[df.apply(lambda row: query_lower in str(row.values).lower(), axis=1)]
-    
-    if matches.empty:
-        return f"No POs found matching: '{query}'"
-    return matches
+        prompt = f"""
+        You are an operational PO search assistant for Indigo Park Canada.
+        Here is the complete current Purchase Order dataset:
+
+        {context_str}
+
+        User Question: {query}
+
+        Answer clearly and concisely. List matching PO Numbers, Dates, CMO Codes, Vendors, Costs, and Reason details.
+        """
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"⚠️ Groq API Connection Error: {str(e)}"
 
 # ==========================================
 # APP LAYOUT
@@ -179,25 +200,41 @@ tab1, tab2, tab3 = st.tabs([t["new_po_tab"], t["history_tab"], t["ai_tab"]])
 # --- TAB 1: CREATE NEW PO ---
 with tab1:
     st.subheader(t["po_details"])
-    
+
     with st.form("po_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
-        
+
         with col1:
             cmo_code = st.text_input(t["cmo_code"], placeholder="e.g. CMO-1851, Forum, Medifice").upper()
-            vendor = st.selectbox(t["service_provider"], ["Logic Control", "Amano", "Stanley / Door Automation", "HVAC / Climate Controls", "Elevator Service", "Electrical / Lighting", "Plumbing", "Other"])
+            vendor = st.selectbox(
+                t["service_provider"],
+                [
+                    "Logic Control", "Amano", "Stanley / Door Automation",
+                    "HVAC / Climate Controls", "Elevator Service",
+                    "Electrical / Lighting", "Plumbing", "Other"
+                ]
+            )
             if vendor == "Other":
                 vendor = st.text_input("Specify Vendor Name")
-            
-            category = st.selectbox(t["category"], ["Gate & Equipment Repair", "Software / Network Call", "HVAC Maintenance", "General Repairs", "Emergency Fix"])
-        
+
+            category = st.selectbox(
+                t["category"],
+                [
+                    "Gate & Equipment Repair", "Software / Network Call",
+                    "HVAC Maintenance", "General Repairs", "Emergency Fix"
+                ]
+            )
+
         with col2:
             priority = st.select_slider(t["priority"], options=["Normal", "Urgent", "Emergency"])
             est_cost = st.number_input(t["est_cost"], min_value=0.0, step=50.0, value=0.0)
             requested_by = st.text_input(t["requested_by"], value="")
-        
-        work_reason = st.text_area(t["work_reason"], placeholder="Explain why Logic Control or the service vendor was requested...")
-        
+
+        work_reason = st.text_area(
+            t["work_reason"],
+            placeholder="Explain why Logic Control or the service vendor was requested..."
+        )
+
         submit_btn = st.form_submit_button(t["generate_btn"], use_container_width=True)
 
     if submit_btn:
@@ -206,7 +243,7 @@ with tab1:
         else:
             po_num = generate_po_number()
             date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-            
+
             new_record = {
                 "PO Number": po_num,
                 "Date": date_str,
@@ -219,30 +256,33 @@ with tab1:
                 "Requested By": requested_by,
                 "Status": "Pending Follow-up"
             }
-            
+
             df = load_po_data()
             df = pd.concat([pd.DataFrame([new_record]), df], ignore_index=True)
             save_po_data(df)
-            
+
             st.success(f"{t['success_msg']} **PO #: {po_num}**")
 
 # --- TAB 2: PO HISTORY & LOG ---
 with tab2:
     st.subheader(t["history_tab"])
-    
+
     df = load_po_data()
-    
+
     if df.empty:
         st.info("No PO records saved yet.")
     else:
         search_query = st.text_input(t["search_label"], "").upper()
         if search_query:
-            filtered_df = df[df["CMO Code"].str.contains(search_query, na=False) | df["Vendor"].str.contains(search_query, case=False, na=False)]
+            filtered_df = df[
+                df["CMO Code"].str.contains(search_query, na=False)
+                | df["Vendor"].str.contains(search_query, case=False, na=False)
+            ]
         else:
             filtered_df = df
-            
+
         st.dataframe(filtered_df, use_container_width=True)
-        
+
         with open(EXCEL_FILE, "rb") as file:
             st.download_button(
                 label=t["download_excel"],
@@ -254,17 +294,31 @@ with tab2:
 # --- TAB 3: AI SEARCH ASSISTANT (GROQ) ---
 with tab3:
     st.subheader(t["ai_tab"])
-    
-    ai_query = st.text_input(t["ai_header"], placeholder=t["ai_placeholder"])
-    
-    if st.button("🔍 Search with AI", use_container_width=True):
+
+    if "show_ai_help" not in st.session_state:
+        st.session_state.show_ai_help = False
+
+    col_q_input, col_q_btn = st.columns([11, 1])
+    with col_q_input:
+        ai_query = st.text_input(t["ai_header"], placeholder=t["ai_placeholder"])
+    with col_q_btn:
+        st.markdown("<div style='padding-top: 28px;'></div>", unsafe_allow_html=True)
+        if st.button("?", key="ai_help_btn", help=t["ai_help_title"], use_container_width=True):
+            st.session_state.show_ai_help = not st.session_state.show_ai_help
+
+    if st.session_state.show_ai_help:
+        with st.container(border=True):
+            st.markdown(f"**{t['ai_help_title']}**")
+            st.markdown(t["ai_help_body"])
+
+    if st.button(t["ai_search_btn"], use_container_width=True):
         if not ai_query:
             st.warning("Please enter a search question.")
         else:
             df = load_po_data()
             with st.spinner("Asking AI Assistant..."):
-                result = query_groq_ai(ai_query, df)
-                
+                result = query_groq_ai(ai_query, df, t["missing_secret"])
+
                 if isinstance(result, str):
                     st.markdown(result)
                 else:
