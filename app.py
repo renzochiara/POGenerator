@@ -56,8 +56,9 @@ TEXTS = {
         "work_reason": "Reason for Service Call / Work Details",
         "category": "Maintenance Category",
         "priority": "Priority Level",
-        "cost_na_label": "Cost is N/A (Not Available / TBD)",
-        "est_cost": "Estimated Cost ($ CAD)",
+        "est_cost": "Estimated Cost ($ CAD) — enter amount or NA",
+        "cost_placeholder": "e.g., 350.00 or NA",
+        "invalid_cost": "Please enter a valid number (e.g., 250 or 250.00) or write NA.",
         "requested_by": "Requested By (Your Name)",
         "generate_btn": "Generate & Save PO",
         "success_msg": "PO Generated and Saved Successfully!",
@@ -94,8 +95,9 @@ TEXTS = {
         "work_reason": "Raison de l'appel de service / Détails du travail",
         "category": "Catégorie d'entretien",
         "priority": "Niveau de Priorité",
-        "cost_na_label": "Coût : N/A (Non disponible / À déterminer)",
-        "est_cost": "Coût Estimé ($ CAD)",
+        "est_cost": "Coût Estimé ($ CAD) — entrer un montant ou NA",
+        "cost_placeholder": "ex. 350.00 ou NA",
+        "invalid_cost": "Veuillez entrer un nombre valide (ex. 250 ou 250.00) ou écrire NA.",
         "requested_by": "Demandé par (Votre nom)",
         "generate_btn": "Générer et Enregistrer le PO",
         "success_msg": "PO généré et enregistré avec succès!",
@@ -128,6 +130,22 @@ COLUMNS = [
 ]
 EXCEL_FILE = "po_log.xlsx"
 INDIGO_LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/Indigo_Group_logo.svg/320px-Indigo_Group_logo.svg.png"
+
+# ==========================================
+# COST PARSER
+# ==========================================
+def parse_cost_input(raw_cost):
+    """Returns ('N/A', True) if NA/N/A/blank, ('123.45', True) if valid number, or (None, False) if invalid."""
+    cleaned = str(raw_cost or "").strip().replace("$", "").replace(",", "").replace(" ", "")
+    if cleaned == "" or cleaned.upper() in ("NA", "N/A", "NONE"):
+        return "N/A", True
+    try:
+        val = float(cleaned)
+        if val < 0:
+            return None, False
+        return f"{val:.2f}", True
+    except ValueError:
+        return None, False
 
 # ==========================================
 # GOOGLE SHEETS (PERSISTENT STORAGE)
@@ -164,19 +182,21 @@ def load_po_data():
             records = ws.get_all_records()
             if not records:
                 return pd.DataFrame(columns=COLUMNS)
-            df = pd.DataFrame(records)
+            df = pd.DataFrame(records, dtype=str)
             for col in COLUMNS:
                 if col not in df.columns:
                     df[col] = ""
+            df["Estimated Cost ($)"] = df["Estimated Cost ($)"].replace("", "N/A")
             return df[COLUMNS]
         except Exception:
             pass
 
     if os.path.exists(EXCEL_FILE):
-        df = pd.read_excel(EXCEL_FILE)
+        df = pd.read_excel(EXCEL_FILE, dtype=str)
         for col in COLUMNS:
             if col not in df.columns:
                 df[col] = ""
+        df["Estimated Cost ($)"] = df["Estimated Cost ($)"].fillna("N/A").replace("", "N/A")
         return df[COLUMNS]
 
     df = pd.DataFrame(columns=COLUMNS)
@@ -186,12 +206,13 @@ def load_po_data():
 def save_po_data(df):
     """Saves PO records to local Excel backup and syncs to Google Sheets if configured."""
     clean_df = df[COLUMNS].copy() if not df.empty else pd.DataFrame(columns=COLUMNS)
+    clean_df = clean_df.astype(str)
     clean_df.to_excel(EXCEL_FILE, index=False)
 
     ws = get_gsheet_worksheet()
     if ws is not None:
         ws.clear()
-        rows = [COLUMNS] + clean_df.fillna("").astype(str).values.tolist()
+        rows = [COLUMNS] + clean_df.fillna("").values.tolist()
         ws.update(rows)
 
 def build_excel_download_bytes(df):
@@ -317,8 +338,6 @@ tab1, tab2, tab3 = st.tabs([t["new_po_tab"], t["history_tab"], t["ai_tab"]])
 with tab1:
     st.subheader(t["po_details"])
 
-    cost_is_na = st.checkbox(t["cost_na_label"], value=False)
-
     with st.form("po_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
 
@@ -345,12 +364,11 @@ with tab1:
 
         with col2:
             priority = st.select_slider(t["priority"], options=["Normal", "Urgent", "Emergency"])
-            if cost_is_na:
-                st.text_input(t["est_cost"], value="N/A", disabled=True)
-                est_cost_value = "N/A"
-            else:
-                est_cost_num = st.number_input(t["est_cost"], min_value=0.0, step=50.0, value=0.0)
-                est_cost_value = round(float(est_cost_num), 2)
+            est_cost_raw = st.text_input(
+                t["est_cost"],
+                value="NA",
+                placeholder=t["cost_placeholder"]
+            )
             requested_by = st.text_input(t["requested_by"], value="")
 
         work_reason = st.text_area(
@@ -361,8 +379,11 @@ with tab1:
         submit_btn = st.form_submit_button(t["generate_btn"], use_container_width=True)
 
     if submit_btn:
+        parsed_cost, cost_ok = parse_cost_input(est_cost_raw)
         if not cmo_code or not work_reason or not requested_by:
             st.error("Please enter CMO Code, Work Reason, and Requested By.")
+        elif not cost_ok:
+            st.error(t["invalid_cost"])
         else:
             po_num = generate_po_number()
             date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -374,7 +395,7 @@ with tab1:
                 "Vendor": vendor,
                 "Category": category,
                 "Priority": priority,
-                "Estimated Cost ($)": est_cost_value,
+                "Estimated Cost ($)": parsed_cost,
                 "Reason": work_reason,
                 "Requested By": requested_by,
                 "Status": "Pending Follow-up"
