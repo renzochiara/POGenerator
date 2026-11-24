@@ -1,9 +1,19 @@
 import io
 import os
 import random
+import smtplib
 from datetime import datetime
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
 import pandas as pd
 import streamlit as st
+
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 try:
     from openai import OpenAI
@@ -22,7 +32,7 @@ except ImportError:
 # PAGE CONFIG & STYLING
 # ==========================================
 st.set_page_config(
-    page_title="Indigo Park Canada - PO Generator & AI Search",
+    page_title="Indigo Park Canada - PO Management System",
     page_icon="🎫",
     layout="wide"
 )
@@ -46,24 +56,34 @@ st.markdown("""
 TEXTS = {
     "EN": {
         "title": "Indigo Park Canada - Service PO Generator",
-        "subtitle": "Create, log, and search Purchase Orders for service calls (Logic Control, Gate, HVAC, etc.)",
-        "new_po_tab": "➕ Create New PO",
-        "history_tab": "📋 PO Log (Excel)",
+        "subtitle": "Create, log, email, and audit Purchase Orders for service calls",
+        "login_title": "🔐 Login to Indigo PO Portal",
+        "username": "Username",
+        "password": "Password",
+        "login_btn": "Sign In",
+        "logout_btn": "Sign Out",
+        "invalid_login": "Invalid username or password.",
+        "new_po_tab": "➕ Create & Send PO",
+        "history_tab": "📋 PO Log",
         "ai_tab": "🤖 AI Search Assistant",
+        "users_tab": "👤 Manage Users",
         "po_details": "PO General Details",
         "cmo_code": "CMO / Parking Lot Code",
         "service_provider": "Service Provider / Vendor",
+        "vendor_other_label": "Specify Custom Vendor Name",
         "work_reason": "Reason for Service Call / Work Details",
         "category": "Maintenance Category",
+        "cat_other_label": "Specify Custom Category Name",
         "priority": "Priority Level",
         "est_cost": "Estimated Cost ($ CAD) — enter amount or NA",
-        "cost_placeholder": "e.g., 350.00 or NA",
-        "invalid_cost": "Please enter a valid number (e.g., 250 or 250.00) or write NA.",
+        "supplier_email": "Supplier / Vendor Email Address",
         "requested_by": "Requested By (Your Name)",
         "generate_btn": "Generate & Save PO",
+        "send_email_btn": "✉️ Generate PO & Email Directly to Supplier",
         "success_msg": "PO Generated and Saved Successfully!",
+        "email_sent_msg": "PO PDF emailed successfully to supplier!",
+        "email_failed_msg": "PO saved, but failed to send email. Check SMTP credentials.",
         "search_label": "Filter by CMO Code or Vendor:",
-        "download_excel": "📥 Download Full PO Log (Excel)",
         "delete_section": "🗑️ Erase a Mistaken PO",
         "select_po_delete": "Select PO Number to erase:",
         "delete_po_btn": "Erase Selected PO",
@@ -71,38 +91,51 @@ TEXTS = {
         "ai_header": "Ask AI to Search POs",
         "ai_placeholder": "e.g., Find all POs for CMO 1851 or calls to Logic Control...",
         "ai_search_btn": "🔍 Search with AI",
-        "ai_help_title": "What can the AI Search Assistant do?",
-        "ai_help_body": (
-            "The AI Search Assistant reads your saved Purchase Order log and answers questions in plain language:\n"
-            "- **Find by CMO / Lot Code:** *\"Show all POs for 1851 Sherbrooke\"* or *\"List POs for Forum\"*\n"
-            "- **Filter by Vendor:** *\"Which service calls did we log for Logic Control?\"*\n"
-            "- **Search by Date or Priority:** *\"Show emergency POs from this month\"* or *\"POs created on 2026-11-19\"*\n"
-            "- **Check Costs & Reasons:** *\"What was the estimated cost for gate repairs?\"*"
-        ),
-        "missing_secret": "Groq API key is not configured yet. Add `GROQ_API_KEY` in Streamlit Secrets to enable AI search.",
-        "storage_cloud": "☁️ Persistent storage active (Google Sheets)",
-        "storage_local": "💾 Local file mode (`po_log.xlsx`) — connect Google Sheets in Secrets to keep data across reboots/sleep."
+        "admin_audit_title": "⚙️ Admin Audit & Payment Management",
+        "actual_cost_label": "Actual Cost ($ CAD)",
+        "payment_status_label": "Payment Status",
+        "update_po_btn": "Update PO Status & Actual Amount",
+        "download_pdf_btn": "📄 Download PDF PO",
+        "create_user_header": "Create New User Account",
+        "new_username_label": "New Username",
+        "new_password_label": "New Password",
+        "new_role_label": "Account Role",
+        "create_user_btn": "➕ Create User",
+        "user_created_msg": "User account created:",
+        "user_exists_err": "That username already exists.",
+        "user_fields_err": "Please enter both a username and a password.",
+        "existing_users_header": "Existing Accounts"
     },
     "FR": {
         "title": "Indigo Park Canada - Générateur de Bon de Commande",
-        "subtitle": "Créer, consigner et rechercher des bons de commande pour appels de service (Logic Control, barrières, etc.)",
-        "new_po_tab": "➕ Créer un PO",
-        "history_tab": "📋 Registre PO (Excel)",
+        "subtitle": "Créer, consigner, envoyer par courriel et auditer les bons de commande",
+        "login_title": "🔐 Connexion Portail PO Indigo",
+        "username": "Nom d'utilisateur",
+        "password": "Mot de passe",
+        "login_btn": "Se connecter",
+        "logout_btn": "Se déconnecter",
+        "invalid_login": "Nom d'utilisateur ou mot de passe invalide.",
+        "new_po_tab": "➕ Créer & Envoyer PO",
+        "history_tab": "📋 Registre PO",
         "ai_tab": "🤖 Assistant Recherche IA",
+        "users_tab": "👤 Gestion Utilisateurs",
         "po_details": "Détails du Bon de Commande",
         "cmo_code": "Code CMO / Code du Stationnement",
         "service_provider": "Fournisseur de Service / Vendeur",
+        "vendor_other_label": "Préciser le nom du fournisseur personnalisé",
         "work_reason": "Raison de l'appel de service / Détails du travail",
         "category": "Catégorie d'entretien",
+        "cat_other_label": "Préciser la catégorie personnalisée",
         "priority": "Niveau de Priorité",
         "est_cost": "Coût Estimé ($ CAD) — entrer un montant ou NA",
-        "cost_placeholder": "ex. 350.00 ou NA",
-        "invalid_cost": "Veuillez entrer un nombre valide (ex. 250 ou 250.00) ou écrire NA.",
+        "supplier_email": "Courriel du Fournisseur",
         "requested_by": "Demandé par (Votre nom)",
         "generate_btn": "Générer et Enregistrer le PO",
+        "send_email_btn": "✉️ Générer & Envoyer le PO au Fournisseur",
         "success_msg": "PO généré et enregistré avec succès!",
+        "email_sent_msg": "Le PO a été envoyé par courriel au fournisseur!",
+        "email_failed_msg": "PO enregistré, mais échec de l'envoi du courriel.",
         "search_label": "Filtrer par code CMO ou fournisseur:",
-        "download_excel": "📥 Télécharger le registre complet (Excel)",
         "delete_section": "🗑️ Effacer un PO en cas d'erreur",
         "select_po_delete": "Choisir le numéro de PO à effacer :",
         "delete_po_btn": "Effacer le PO sélectionné",
@@ -110,48 +143,40 @@ TEXTS = {
         "ai_header": "Interroger l'IA sur les PO",
         "ai_placeholder": "ex: Trouve tous les PO du CMO 1851 ou les appels faits à Logic Control...",
         "ai_search_btn": "🔍 Rechercher avec l'IA",
-        "ai_help_title": "Que peut faire l'Assistant Recherche IA ?",
-        "ai_help_body": (
-            "L'Assistant Recherche IA lit votre registre de bons de commande et répond à vos questions :\n"
-            "- **Recherche par code CMO / stationnement :** *« Montre tous les PO pour 1851 Sherbrooke »* ou *« PO du Forum »*\n"
-            "- **Filtrer par fournisseur :** *« Quels appels de service avons-nous faits à Logic Control ? »*\n"
-            "- **Recherche par date ou priorité :** *« Montre les PO urgents ou d'urgence »* ou *« PO du 2026-11-19 »*\n"
-            "- **Vérifier coûts et raisons :** *« Quel est le coût estimé pour les réparations de barrières ? »*"
-        ),
-        "missing_secret": "La clé API Groq n'est pas encore configurée. Ajoutez `GROQ_API_KEY` dans les Secrets Streamlit pour activer la recherche IA.",
-        "storage_cloud": "☁️ Stockage persistant actif (Google Sheets)",
-        "storage_local": "💾 Mode fichier local (`po_log.xlsx`) — configurez Google Sheets dans les Secrets pour garder les PO après redémarrage/veille."
+        "admin_audit_title": "⚙️ Audit Admin & Gestion des Paiements",
+        "actual_cost_label": "Coût Réel ($ CAD)",
+        "payment_status_label": "Statut du Paiement",
+        "update_po_btn": "Mettre à jour le PO",
+        "download_pdf_btn": "📄 Télécharger le PO PDF",
+        "create_user_header": "Créer un nouveau compte utilisateur",
+        "new_username_label": "Nouveau nom d'utilisateur",
+        "new_password_label": "Nouveau mot de passe",
+        "new_role_label": "Rôle du compte",
+        "create_user_btn": "➕ Créer l'utilisateur",
+        "user_created_msg": "Compte utilisateur créé :",
+        "user_exists_err": "Ce nom d'utilisateur existe déjà.",
+        "user_fields_err": "Veuillez entrer un nom d'utilisateur et un mot de passe.",
+        "existing_users_header": "Comptes existants"
     }
 }
 
 COLUMNS = [
     "PO Number", "Date", "CMO Code", "Vendor", "Category",
-    "Priority", "Estimated Cost ($)", "Reason", "Requested By", "Status"
+    "Priority", "Estimated Cost ($)", "Actual Cost ($)",
+    "Supplier Email", "Reason", "Requested By", "Payment Status"
 ]
 EXCEL_FILE = "po_log.xlsx"
 INDIGO_LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/Indigo_Group_logo.svg/320px-Indigo_Group_logo.svg.png"
 
-# ==========================================
-# COST PARSER
-# ==========================================
-def parse_cost_input(raw_cost):
-    """Returns ('N/A', True) if NA/N/A/blank, ('123.45', True) if valid number, or (None, False) if invalid."""
-    cleaned = str(raw_cost or "").strip().replace("$", "").replace(",", "").replace(" ", "")
-    if cleaned == "" or cleaned.upper() in ("NA", "N/A", "NONE"):
-        return "N/A", True
-    try:
-        val = float(cleaned)
-        if val < 0:
-            return None, False
-        return f"{val:.2f}", True
-    except ValueError:
-        return None, False
+DEFAULT_USERS = {
+    "user": {"password": "user123", "role": "user"},
+    "admin": {"password": "admin123", "role": "admin"}
+}
 
 # ==========================================
-# GOOGLE SHEETS (PERSISTENT STORAGE)
+# GOOGLE SHEETS & USER MANAGEMENT HELPERS
 # ==========================================
-def get_gsheet_worksheet():
-    """Returns gspread worksheet if GOOGLE_SERVICE_ACCOUNT and GSHEET_ID are configured in Secrets."""
+def get_gsheet_spreadsheet():
     if not HAS_GSHEETS:
         return None
     try:
@@ -164,19 +189,200 @@ def get_gsheet_worksheet():
             scopes=["https://www.googleapis.com/auth/spreadsheets"]
         )
         client = gspread.authorize(creds)
-        spreadsheet = client.open_by_key(str(sheet_id).strip())
+        return client.open_by_key(str(sheet_id).strip())
+    except Exception:
+        return None
+
+def get_gsheet_worksheet(title="PO_Log", headers=COLUMNS):
+    spreadsheet = get_gsheet_spreadsheet()
+    if spreadsheet is None:
+        return None
+    try:
         try:
-            return spreadsheet.worksheet("PO_Log")
+            return spreadsheet.worksheet(title)
         except gspread.WorksheetNotFound:
-            ws = spreadsheet.add_worksheet(title="PO_Log", rows=1000, cols=15)
-            ws.append_row(COLUMNS)
+            ws = spreadsheet.add_worksheet(title=title, rows=1000, cols=15)
+            ws.append_row(headers)
             return ws
     except Exception:
         return None
 
+def load_users_store():
+    """Loads user accounts from Secrets, Google Sheets 'Users' tab, and session state."""
+    users = {k: dict(v) for k, v in DEFAULT_USERS.items()}
+
+    secrets_users = st.secrets.get("USERS", {})
+    if isinstance(secrets_users, dict):
+        for uname, uinfo in secrets_users.items():
+            if isinstance(uinfo, dict) and "password" in uinfo:
+                users[str(uname)] = {
+                    "password": str(uinfo["password"]),
+                    "role": str(uinfo.get("role", "user"))
+                }
+
+    ws_users = get_gsheet_worksheet("Users", ["Username", "Password", "Role"])
+    if ws_users is not None:
+        try:
+            for row in ws_users.get_all_records():
+                uname = str(row.get("Username", "")).strip()
+                pwd = str(row.get("Password", "")).strip()
+                role = str(row.get("Role", "user")).strip().lower() or "user"
+                if uname and pwd:
+                    users[uname] = {"password": pwd, "role": role}
+        except Exception:
+            pass
+
+    if "custom_users" in st.session_state:
+        for uname, uinfo in st.session_state.custom_users.items():
+            users[uname] = dict(uinfo)
+
+    return users
+
+def create_user_account(username, password, role):
+    """Creates a new user in session state and persists to Google Sheets if configured."""
+    clean_user = str(username).strip()
+    clean_pass = str(password).strip()
+    clean_role = "admin" if str(role).strip().lower() == "admin" else "user"
+
+    if "custom_users" not in st.session_state:
+        st.session_state.custom_users = {}
+
+    st.session_state.custom_users[clean_user] = {
+        "password": clean_pass,
+        "role": clean_role
+    }
+
+    ws_users = get_gsheet_worksheet("Users", ["Username", "Password", "Role"])
+    if ws_users is not None:
+        all_users = load_users_store()
+        rows = [["Username", "Password", "Role"]] + [
+            [u, info["password"], info["role"]] for u, info in all_users.items()
+        ]
+        ws_users.clear()
+        ws_users.update(rows)
+
+def authenticate(username, password):
+    users = load_users_store()
+    u = str(username or "").strip()
+    if u in users and users[u]["password"] == password:
+        return users[u]["role"]
+    return None
+
+# ==========================================
+# PDF GENERATION HELPER
+# ==========================================
+def generate_po_pdf_bytes(po_data):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36
+    )
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "DocTitle",
+        parent=styles["Heading1"],
+        fontSize=20,
+        textColor=colors.HexColor("#581c87"),
+        spaceAfter=12
+    )
+
+    story = []
+    story.append(Paragraph("INDIGO PARK CANADA", title_style))
+    story.append(Paragraph(f"<b>PURCHASE ORDER:</b> {po_data.get('PO Number')}", styles["Heading2"]))
+    story.append(Spacer(1, 10))
+
+    data = [
+        ["Field", "Details"],
+        ["PO Date", str(po_data.get("Date", ""))],
+        ["CMO / Lot Code", str(po_data.get("CMO Code", ""))],
+        ["Vendor / Supplier", str(po_data.get("Vendor", ""))],
+        ["Category", str(po_data.get("Category", ""))],
+        ["Priority Level", str(po_data.get("Priority", ""))],
+        ["Estimated Cost ($)", str(po_data.get("Estimated Cost ($)", "N/A"))],
+        ["Actual Cost ($)", str(po_data.get("Actual Cost ($)", "N/A"))],
+        ["Requested By", str(po_data.get("Requested By", ""))],
+        ["Supplier Email", str(po_data.get("Supplier Email", ""))],
+        ["Payment Status", str(po_data.get("Payment Status", "Pending"))],
+        ["Work Description / Reason", str(po_data.get("Reason", ""))]
+    ]
+
+    table = Table(data, colWidths=[150, 380])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (1, 0), colors.HexColor("#581c87")),
+        ("TEXTCOLOR", (0, 0), (1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+
+    story.append(table)
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+# ==========================================
+# EMAIL DISPATCH HELPER
+# ==========================================
+def send_po_email(to_email, po_data, pdf_bytes):
+    smtp_server = st.secrets.get("SMTP_SERVER", "")
+    smtp_port = int(st.secrets.get("SMTP_PORT", 587))
+    smtp_user = st.secrets.get("SMTP_USER", "")
+    smtp_pass = st.secrets.get("SMTP_PASSWORD", "")
+
+    if not (smtp_server and smtp_user and smtp_pass):
+        return False, "SMTP configuration missing in Streamlit Secrets."
+
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = smtp_user
+        msg["To"] = to_email
+        msg["Subject"] = f"Indigo Park Canada - Purchase Order {po_data.get('PO Number')}"
+
+        body = f"""Hello,
+
+Please find attached Purchase Order {po_data.get('PO Number')} for service work requested by Indigo Park Canada.
+
+Details:
+- CMO Code: {po_data.get('CMO Code')}
+- Priority: {po_data.get('Priority')}
+- Requested By: {po_data.get('Requested By')}
+
+Thank you,
+Indigo Park Canada Team
+"""
+        msg.attach(MIMEText(body, "plain"))
+
+        attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
+        attachment.add_header("Content-Disposition", "attachment", filename=f"{po_data.get('PO Number')}.pdf")
+        msg.attach(attachment)
+
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.send_message(msg)
+        server.quit()
+        return True, "Success"
+    except Exception as e:
+        return False, str(e)
+
+# ==========================================
+# COST PARSER & DATA HELPERS
+# ==========================================
+def parse_cost_input(raw_cost):
+    cleaned = str(raw_cost or "").strip().replace("$", "").replace(",", "").replace(" ", "")
+    if cleaned == "" or cleaned.upper() in ("NA", "N/A", "NONE"):
+        return "N/A", True
+    try:
+        val = float(cleaned)
+        if val < 0:
+            return None, False
+        return f"{val:.2f}", True
+    except ValueError:
+        return None, False
+
 def load_po_data():
-    """Loads PO records from Google Sheets if configured, else from local Excel file."""
-    ws = get_gsheet_worksheet()
+    ws = get_gsheet_worksheet("PO_Log", COLUMNS)
     if ws is not None:
         try:
             records = ws.get_all_records()
@@ -186,7 +392,6 @@ def load_po_data():
             for col in COLUMNS:
                 if col not in df.columns:
                     df[col] = ""
-            df["Estimated Cost ($)"] = df["Estimated Cost ($)"].replace("", "N/A")
             return df[COLUMNS]
         except Exception:
             pass
@@ -196,7 +401,6 @@ def load_po_data():
         for col in COLUMNS:
             if col not in df.columns:
                 df[col] = ""
-        df["Estimated Cost ($)"] = df["Estimated Cost ($)"].fillna("N/A").replace("", "N/A")
         return df[COLUMNS]
 
     df = pd.DataFrame(columns=COLUMNS)
@@ -204,72 +408,26 @@ def load_po_data():
     return df
 
 def save_po_data(df):
-    """Saves PO records to local Excel backup and syncs to Google Sheets if configured."""
     clean_df = df[COLUMNS].copy() if not df.empty else pd.DataFrame(columns=COLUMNS)
     clean_df = clean_df.astype(str)
     clean_df.to_excel(EXCEL_FILE, index=False)
 
-    ws = get_gsheet_worksheet()
+    ws = get_gsheet_worksheet("PO_Log", COLUMNS)
     if ws is not None:
         ws.clear()
         rows = [COLUMNS] + clean_df.fillna("").values.tolist()
         ws.update(rows)
 
-def build_excel_download_bytes(df):
-    """Creates an in-memory Excel file (.xlsx) for downloading."""
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="PO_Log")
-    return output.getvalue()
-
-# ==========================================
-# GROQ AI & PO HELPERS
-# ==========================================
-def get_groq_api_key():
-    """Reads GROQ_API_KEY from Streamlit Secrets (or environment)."""
-    try:
-        if "GROQ_API_KEY" in st.secrets and st.secrets["GROQ_API_KEY"]:
-            return str(st.secrets["GROQ_API_KEY"]).strip()
-    except Exception:
-        pass
-    return os.environ.get("GROQ_API_KEY", "").strip()
-
-def resolve_groq_model(client):
-    """Finds an available chat model on the account using Groq's /models endpoint."""
-    preferred_models = [
-        "openai/gpt-oss-20b",
-        "openai/gpt-oss-120b",
-        "qwen/qwen3.8-27b",
-    ]
-    try:
-        models_resp = client.models.list()
-        available_ids = [m.id for m in getattr(models_resp, "data", []) if getattr(m, "id", None)]
-
-        for model_id in preferred_models:
-            if model_id in available_ids:
-                return model_id
-
-        excluded_prefixes = ("whisper", "canopylabs", "meta-llama/llama-prompt-guard")
-        for model_id in available_ids:
-            if not model_id.startswith(excluded_prefixes):
-                return model_id
-    except Exception:
-        pass
-
-    return "openai/gpt-oss-20b"
-
 def generate_po_number():
-    """Generates standard PO-YYYYMMDD-XXXX format."""
     today = datetime.now().strftime("%Y%m%d")
     rand_id = random.randint(1000, 9999)
     return f"PO-{today}-{rand_id}"
 
 def query_groq_ai(query, df, missing_secret_msg):
-    """Answers search queries against PO log using Groq via Streamlit Secrets."""
     if df.empty:
         return "No PO records exist in the log yet."
 
-    api_key = get_groq_api_key()
+    api_key = st.secrets.get("GROQ_API_KEY", "") if "GROQ_API_KEY" in st.secrets else ""
     if not api_key:
         return f"⚠️ {missing_secret_msg}"
 
@@ -279,201 +437,280 @@ def query_groq_ai(query, df, missing_secret_msg):
     context_str = df.to_string(index=False)
 
     try:
-        client = OpenAI(
-            api_key=api_key,
-            base_url="https://api.groq.com/openai/v1"
-        )
-        model_name = resolve_groq_model(client)
-
+        client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
         prompt = f"""
         You are an operational PO search assistant for Indigo Park Canada.
-        Here is the complete current Purchase Order dataset:
-
+        Dataset:
         {context_str}
 
         User Question: {query}
-
-        Answer clearly and concisely. List matching PO Numbers, Dates, CMO Codes, Vendors, Costs, and Reason details.
+        Answer clearly and concisely.
         """
-
         response = client.chat.completions.create(
-            model=model_name,
+            model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1
         )
-        answer = response.choices[0].message.content
-        return f"{answer}\n\n*Model used: `{model_name}`*"
+        return response.choices[0].message.content
     except Exception as e:
-        return f"⚠️ Groq API Connection Error: {str(e)}"
+        return f"⚠️ Groq API Error: {str(e)}"
 
 # ==========================================
-# SESSION STATE INIT
+# SESSION STATE & AUTH FLOW
 # ==========================================
-if "show_ai_help" not in st.session_state:
-    st.session_state.show_ai_help = False
+if "user_role" not in st.session_state:
+    st.session_state.user_role = None
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+if "custom_users" not in st.session_state:
+    st.session_state.custom_users = {}
 
-# ==========================================
-# SIDEBAR (LOGO, LANGUAGE, STORAGE STATUS)
-# ==========================================
 st.sidebar.image(INDIGO_LOGO_URL, width=200)
 st.sidebar.markdown("---")
 lang = st.sidebar.radio("Language / Langue", ["EN", "FR"], horizontal=True)
 t = TEXTS[lang]
 
-st.sidebar.markdown("---")
-if get_gsheet_worksheet() is not None:
-    st.sidebar.success(t["storage_cloud"])
-else:
-    st.sidebar.info(t["storage_local"])
+if not st.session_state.user_role:
+    st.title(t["login_title"])
+    with st.form("login_form"):
+        u_input = st.text_input(t["username"])
+        p_input = st.text_input(t["password"], type="password")
+        sub_login = st.form_submit_button(t["login_btn"], use_container_width=True)
 
-# ==========================================
-# MAIN PAGE LAYOUT
-# ==========================================
+        if sub_login:
+            role = authenticate(u_input, p_input)
+            if role:
+                st.session_state.user_role = role
+                st.session_state.auth_user = u_input.strip()
+                st.rerun()
+            else:
+                st.error(t["invalid_login"])
+    st.stop()
+
+st.sidebar.markdown(f"**Logged in as:** `{st.session_state.auth_user}` ({st.session_state.user_role.upper()})")
+if st.sidebar.button(t["logout_btn"], use_container_width=True):
+    st.session_state.user_role = None
+    st.session_state.auth_user = None
+    st.rerun()
+
 st.title(t["title"])
 st.caption(t["subtitle"])
 
-tab1, tab2, tab3 = st.tabs([t["new_po_tab"], t["history_tab"], t["ai_tab"]])
+# ==========================================
+# ADMIN VIEW vs REGULAR USER VIEW
+# ==========================================
+if st.session_state.user_role == "admin":
+    tab_log, tab_ai, tab_users = st.tabs([t["history_tab"], t["ai_tab"], t["users_tab"]])
 
-# --- TAB 1: CREATE NEW PO ---
-with tab1:
-    st.subheader(t["po_details"])
+    with tab_log:
+        st.subheader(t["admin_audit_title"])
+        df = load_po_data()
 
-    with st.form("po_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-
-        with col1:
-            cmo_code = st.text_input(t["cmo_code"], placeholder="e.g. CMO-1851, Forum, Medifice").upper()
-            vendor = st.selectbox(
-                t["service_provider"],
-                [
-                    "Logic Control", "Amano", "Stanley / Door Automation",
-                    "HVAC / Climate Controls", "Elevator Service",
-                    "Electrical / Lighting", "Plumbing", "Other"
-                ]
-            )
-            if vendor == "Other":
-                vendor = st.text_input("Specify Vendor Name")
-
-            category = st.selectbox(
-                t["category"],
-                [
-                    "Gate & Equipment Repair", "Software / Network Call",
-                    "HVAC Maintenance", "General Repairs", "Emergency Fix"
-                ]
-            )
-
-        with col2:
-            priority = st.select_slider(t["priority"], options=["Normal", "Urgent", "Emergency"])
-            est_cost_raw = st.text_input(
-                t["est_cost"],
-                value="NA",
-                placeholder=t["cost_placeholder"]
-            )
-            requested_by = st.text_input(t["requested_by"], value="")
-
-        work_reason = st.text_area(
-            t["work_reason"],
-            placeholder="Explain why Logic Control or the service vendor was requested..."
-        )
-
-        submit_btn = st.form_submit_button(t["generate_btn"], use_container_width=True)
-
-    if submit_btn:
-        parsed_cost, cost_ok = parse_cost_input(est_cost_raw)
-        if not cmo_code or not work_reason or not requested_by:
-            st.error("Please enter CMO Code, Work Reason, and Requested By.")
-        elif not cost_ok:
-            st.error(t["invalid_cost"])
+        if df.empty:
+            st.info("No PO records found.")
         else:
-            po_num = generate_po_number()
-            date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            search_q = st.text_input(t["search_label"], "").upper()
+            filtered_df = (
+                df[
+                    df["CMO Code"].astype(str).str.contains(search_q, na=False)
+                    | df["Vendor"].astype(str).str.contains(search_q, case=False, na=False)
+                ]
+                if search_q else df
+            )
 
-            new_record = {
-                "PO Number": po_num,
-                "Date": date_str,
-                "CMO Code": cmo_code,
-                "Vendor": vendor,
-                "Category": category,
-                "Priority": priority,
-                "Estimated Cost ($)": parsed_cost,
-                "Reason": work_reason,
-                "Requested By": requested_by,
-                "Status": "Pending Follow-up"
-            }
+            st.dataframe(filtered_df, use_container_width=True)
 
-            df = load_po_data()
-            df = pd.concat([pd.DataFrame([new_record]), df], ignore_index=True)
-            save_po_data(df)
+            st.markdown("---")
+            st.markdown("### Update Status & Actual Amount")
+            po_list = filtered_df["PO Number"].dropna().astype(str).tolist()
 
-            st.success(f"{t['success_msg']} **PO #: {po_num}**")
+            if po_list:
+                c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
+                with c1:
+                    selected_po = st.selectbox("Select PO Number", po_list)
+                with c2:
+                    actual_cost_in = st.text_input(t["actual_cost_label"], value="", placeholder="e.g. 450.00 or NA")
+                with c3:
+                    pay_status = st.radio(
+                        t["payment_status_label"],
+                        ["Pending", "Partial Paid", "Paid"],
+                        horizontal=True
+                    )
+                with c4:
+                    st.markdown("<div style='padding-top: 25px;'></div>", unsafe_allow_html=True)
+                    if st.button(t["update_po_btn"], use_container_width=True):
+                        parsed_act, act_ok = parse_cost_input(actual_cost_in)
+                        if not act_ok:
+                            st.error("Invalid actual cost format.")
+                        else:
+                            idx = df[df["PO Number"].astype(str) == selected_po].index
+                            if not idx.empty:
+                                df.loc[idx, "Actual Cost ($)"] = parsed_act
+                                df.loc[idx, "Payment Status"] = pay_status
+                                save_po_data(df)
+                                st.success(f"Updated {selected_po} successfully!")
+                                st.rerun()
 
-# --- TAB 2: PO HISTORY & LOG ---
-with tab2:
-    st.subheader(t["history_tab"])
+                po_row_dict = df[df["PO Number"].astype(str) == selected_po].iloc[0].to_dict()
+                pdf_bytes = generate_po_pdf_bytes(po_row_dict)
+                st.download_button(
+                    label=f"{t['download_pdf_btn']} ({selected_po})",
+                    data=pdf_bytes,
+                    file_name=f"{selected_po}.pdf",
+                    mime="application/pdf"
+                )
 
-    df = load_po_data()
+    with tab_ai:
+        st.subheader(t["ai_tab"])
+        ai_query = st.text_input(t["ai_header"], placeholder=t["ai_placeholder"])
+        if st.button(t["ai_search_btn"], use_container_width=True):
+            if ai_query:
+                df = load_po_data()
+                with st.spinner("Analyzing POs..."):
+                    st.markdown(query_groq_ai(ai_query, df, t["missing_secret"]))
 
-    if df.empty:
-        st.info("No PO records saved yet.")
-    else:
-        search_query = st.text_input(t["search_label"], "").upper()
-        if search_query:
-            filtered_df = df[
-                df["CMO Code"].astype(str).str.contains(search_query, na=False)
-                | df["Vendor"].astype(str).str.contains(search_query, case=False, na=False)
-            ]
-        else:
-            filtered_df = df
+    with tab_users:
+        st.subheader(t["create_user_header"])
+        with st.form("create_user_form", clear_on_submit=True):
+            u_col1, u_col2, u_col3 = st.columns(3)
+            with u_col1:
+                new_uname = st.text_input(t["new_username_label"])
+            with u_col2:
+                new_upass = st.text_input(t["new_password_label"], type="password")
+            with u_col3:
+                new_urole = st.selectbox(t["new_role_label"], ["user", "admin"])
 
-        st.dataframe(filtered_df, use_container_width=True)
-
-        st.download_button(
-            label=t["download_excel"],
-            data=build_excel_download_bytes(df),
-            file_name=f"Indigo_PO_Log_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            create_sub = st.form_submit_button(t["create_user_btn"], use_container_width=True)
+            if create_sub:
+                clean_u = new_uname.strip()
+                clean_p = new_upass.strip()
+                all_existing = load_users_store()
+                if not clean_u or not clean_p:
+                    st.error(t["user_fields_err"])
+                elif clean_u in all_existing:
+                    st.error(t["user_exists_err"])
+                else:
+                    create_user_account(clean_u, clean_p, new_urole)
+                    st.success(f"{t['user_created_msg']} `{clean_u}` ({new_urole})")
 
         st.markdown("---")
-        st.markdown(f"**{t['delete_section']}**")
-        po_list = df["PO Number"].dropna().astype(str).tolist()
-        if po_list:
-            col_del1, col_del2 = st.columns([3, 1])
-            with col_del1:
-                po_to_erase = st.selectbox(t["select_po_delete"], po_list, label_visibility="collapsed")
-            with col_del2:
-                if st.button(t["delete_po_btn"], use_container_width=True):
-                    updated_df = df[df["PO Number"].astype(str) != po_to_erase].reset_index(drop=True)
-                    save_po_data(updated_df)
-                    st.success(f"{t['po_erased_msg']} {po_to_erase}")
-                    st.rerun()
+        st.markdown(f"**{t['existing_users_header']}**")
+        users_snapshot = load_users_store()
+        users_table = pd.DataFrame([
+            {"Username": u, "Role": info["role"]}
+            for u, info in users_snapshot.items()
+        ])
+        st.dataframe(users_table, use_container_width=True)
 
-# --- TAB 3: AI SEARCH ASSISTANT (GROQ) ---
-with tab3:
-    st.subheader(t["ai_tab"])
+else:
+    tab1, tab2 = st.tabs([t["new_po_tab"], t["history_tab"]])
 
-    col_q_input, col_q_btn = st.columns([11, 1])
-    with col_q_input:
-        ai_query = st.text_input(t["ai_header"], placeholder=t["ai_placeholder"])
-    with col_q_btn:
-        st.markdown("<div style='padding-top: 28px;'></div>", unsafe_allow_html=True)
-        if st.button("?", key="ai_help_btn", help=t["ai_help_title"], use_container_width=True):
-            st.session_state.show_ai_help = not st.session_state.show_ai_help
+    with tab1:
+        st.subheader(t["po_details"])
+        with st.form("user_po_form"):
+            col1, col2 = st.columns(2)
 
-    if st.session_state.show_ai_help:
-        with st.container(border=True):
-            st.markdown(f"**{t['ai_help_title']}**")
-            st.markdown(t["ai_help_body"])
+            with col1:
+                cmo_code = st.text_input(t["cmo_code"], placeholder="e.g. CMO-1851").upper()
 
-    if st.button(t["ai_search_btn"], use_container_width=True):
-        if not ai_query:
-            st.warning("Please enter a search question.")
-        else:
-            df = load_po_data()
-            with st.spinner("Asking AI Assistant..."):
-                result = query_groq_ai(ai_query, df, t["missing_secret"])
+                vendor_choice = st.selectbox(
+                    t["service_provider"],
+                    [
+                        "Logic Control", "Amano", "Stanley / Door Automation",
+                        "HVAC / Climate Controls", "Elevator Service",
+                        "Electrical / Lighting", "Plumbing", "Other"
+                    ]
+                )
+                vendor_other = ""
+                if vendor_choice == "Other":
+                    vendor_other = st.text_input(t["vendor_other_label"])
 
-                if isinstance(result, str):
-                    st.markdown(result)
-                else:
-                    st.dataframe(result, use_container_width=True)
+                cat_choice = st.selectbox(
+                    t["category"],
+                    [
+                        "Gate & Equipment Repair", "Software / Network Call",
+                        "HVAC Maintenance", "General Repairs", "Emergency Fix",
+                        "Other"
+                    ]
+                )
+                cat_other = ""
+                if cat_choice == "Other":
+                    cat_other = st.text_input(t["cat_other_label"])
+
+            with col2:
+                priority = st.select_slider(t["priority"], options=["Normal", "Urgent", "Emergency"])
+                est_cost_raw = st.text_input(t["est_cost"], value="NA")
+                supplier_email = st.text_input(t["supplier_email"], placeholder="vendor@supplier.com")
+                requested_by = st.text_input(t["requested_by"], value=st.session_state.auth_user)
+
+            work_reason = st.text_area(t["work_reason"])
+
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                sub_save_only = st.form_submit_button(t["generate_btn"], use_container_width=True)
+            with col_btn2:
+                sub_send_email = st.form_submit_button(t["send_email_btn"], use_container_width=True)
+
+        if sub_save_only or sub_send_email:
+            final_vendor = vendor_other if vendor_choice == "Other" else vendor_choice
+            final_cat = cat_other if cat_choice == "Other" else cat_choice
+            parsed_cost, cost_ok = parse_cost_input(est_cost_raw)
+
+            if not cmo_code or not work_reason or not requested_by or not final_vendor:
+                st.error("Please fill in CMO Code, Vendor, Reason, and Requested By.")
+            elif not cost_ok:
+                st.error(t["invalid_cost"])
+            elif sub_send_email and not supplier_email:
+                st.error("Supplier email is required to send the PO.")
+            else:
+                po_num = generate_po_number()
+                date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+                new_record = {
+                    "PO Number": po_num,
+                    "Date": date_str,
+                    "CMO Code": cmo_code,
+                    "Vendor": final_vendor,
+                    "Category": final_cat,
+                    "Priority": priority,
+                    "Estimated Cost ($)": parsed_cost,
+                    "Actual Cost ($)": "N/A",
+                    "Supplier Email": supplier_email,
+                    "Reason": work_reason,
+                    "Requested By": requested_by,
+                    "Payment Status": "Pending"
+                }
+
+                df = load_po_data()
+                df = pd.concat([pd.DataFrame([new_record]), df], ignore_index=True)
+                save_po_data(df)
+
+                st.success(f"{t['success_msg']} **PO #: {po_num}**")
+
+                if sub_send_email:
+                    pdf_bytes = generate_po_pdf_bytes(new_record)
+                    success, err = send_po_email(supplier_email, new_record, pdf_bytes)
+                    if success:
+                        st.info(t["email_sent_msg"])
+                    else:
+                        st.warning(f"{t['email_failed_msg']} ({err})")
+
+    with tab2:
+        st.subheader(t["history_tab"])
+        df = load_po_data()
+        if not df.empty:
+            st.dataframe(df, use_container_width=True)
+
+            po_list = df["PO Number"].dropna().astype(str).tolist()
+            if po_list:
+                st.markdown("---")
+                st.markdown(f"**{t['delete_section']}**")
+                c_del1, c_del2 = st.columns([3, 1])
+                with c_del1:
+                    po_del = st.selectbox(t["select_po_delete"], po_list, label_visibility="collapsed")
+                with c_del2:
+                    if st.button(t["delete_po_btn"], use_container_width=True):
+                        updated_df = df[df["PO Number"].astype(str) != po_del].reset_index(drop=True)
+                        save_po_data(updated_df)
+                        st.success(f"{t['po_erased_msg']} {po_del}")
+                        st.rerun()
