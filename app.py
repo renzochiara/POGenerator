@@ -88,6 +88,9 @@ TEXTS = {
         "select_po_delete": "Select PO Number to erase:",
         "delete_po_btn": "Erase Selected PO",
         "po_erased_msg": "Erased PO:",
+        "pdf_section": "📄 Download Readable PO PDF",
+        "select_po_pdf": "Select PO Number for PDF:",
+        "download_pdf_btn": "📄 Download PDF",
         "ai_header": "Ask AI to Search POs",
         "ai_placeholder": "e.g., Find all POs for CMO 1851 or calls to Logic Control...",
         "ai_search_btn": "🔍 Search with AI",
@@ -95,7 +98,6 @@ TEXTS = {
         "actual_cost_label": "Actual Cost ($ CAD)",
         "payment_status_label": "Payment Status",
         "update_po_btn": "Update PO Status & Actual Amount",
-        "download_pdf_btn": "📄 Download PDF PO",
         "create_user_header": "Create New User Account",
         "new_username_label": "New Username",
         "new_password_label": "New Password",
@@ -140,6 +142,9 @@ TEXTS = {
         "select_po_delete": "Choisir le numéro de PO à effacer :",
         "delete_po_btn": "Effacer le PO sélectionné",
         "po_erased_msg": "PO effacé :",
+        "pdf_section": "📄 Télécharger le PO en PDF lisible",
+        "select_po_pdf": "Choisir le numéro de PO pour le PDF :",
+        "download_pdf_btn": "📄 Télécharger PDF",
         "ai_header": "Interroger l'IA sur les PO",
         "ai_placeholder": "ex: Trouve tous les PO du CMO 1851 ou les appels faits à Logic Control...",
         "ai_search_btn": "🔍 Rechercher avec l'IA",
@@ -147,7 +152,6 @@ TEXTS = {
         "actual_cost_label": "Coût Réel ($ CAD)",
         "payment_status_label": "Statut du Paiement",
         "update_po_btn": "Mettre à jour le PO",
-        "download_pdf_btn": "📄 Télécharger le PO PDF",
         "create_user_header": "Créer un nouveau compte utilisateur",
         "new_username_label": "Nouveau nom d'utilisateur",
         "new_password_label": "Nouveau mot de passe",
@@ -208,7 +212,6 @@ def get_gsheet_worksheet(title="PO_Log", headers=COLUMNS):
         return None
 
 def load_users_store():
-    """Loads user accounts from Secrets, Google Sheets 'Users' tab, and session state."""
     users = {k: dict(v) for k, v in DEFAULT_USERS.items()}
 
     secrets_users = st.secrets.get("USERS", {})
@@ -239,7 +242,6 @@ def load_users_store():
     return users
 
 def create_user_account(username, password, role):
-    """Creates a new user in session state and persists to Google Sheets if configured."""
     clean_user = str(username).strip()
     clean_pass = str(password).strip()
     clean_role = "admin" if str(role).strip().lower() == "admin" else "user"
@@ -283,36 +285,52 @@ def generate_po_pdf_bytes(po_data):
         parent=styles["Heading1"],
         fontSize=20,
         textColor=colors.HexColor("#581c87"),
-        spaceAfter=12
+        spaceAfter=6
+    )
+    cell_style = ParagraphStyle(
+        "CellText",
+        parent=styles["Normal"],
+        fontSize=10,
+        leading=13
+    )
+    reason_style = ParagraphStyle(
+        "ReasonText",
+        parent=styles["Normal"],
+        fontSize=10,
+        leading=14
     )
 
     story = []
     story.append(Paragraph("INDIGO PARK CANADA", title_style))
-    story.append(Paragraph(f"<b>PURCHASE ORDER:</b> {po_data.get('PO Number')}", styles["Heading2"]))
+    story.append(Paragraph(f"<b>PURCHASE ORDER:</b> {po_data.get('PO Number', '')}", styles["Heading2"]))
     story.append(Spacer(1, 10))
 
-    data = [
-        ["Field", "Details"],
-        ["PO Date", str(po_data.get("Date", ""))],
-        ["CMO / Lot Code", str(po_data.get("CMO Code", ""))],
-        ["Vendor / Supplier", str(po_data.get("Vendor", ""))],
-        ["Category", str(po_data.get("Category", ""))],
-        ["Priority Level", str(po_data.get("Priority", ""))],
-        ["Estimated Cost ($)", str(po_data.get("Estimated Cost ($)", "N/A"))],
-        ["Actual Cost ($)", str(po_data.get("Actual Cost ($)", "N/A"))],
-        ["Requested By", str(po_data.get("Requested By", ""))],
-        ["Supplier Email", str(po_data.get("Supplier Email", ""))],
-        ["Payment Status", str(po_data.get("Payment Status", "Pending"))],
-        ["Work Description / Reason", str(po_data.get("Reason", ""))]
+    rows_data = [
+        [Paragraph("<b>Field</b>", cell_style), Paragraph("<b>Details</b>", cell_style)],
+        [Paragraph("<b>PO Number</b>", cell_style), Paragraph(str(po_data.get("PO Number", "")), cell_style)],
+        [Paragraph("<b>Date</b>", cell_style), Paragraph(str(po_data.get("Date", "")), cell_style)],
+        [Paragraph("<b>CMO / Lot Code</b>", cell_style), Paragraph(str(po_data.get("CMO Code", "")), cell_style)],
+        [Paragraph("<b>Vendor / Supplier</b>", cell_style), Paragraph(str(po_data.get("Vendor", "")), cell_style)],
+        [Paragraph("<b>Category</b>", cell_style), Paragraph(str(po_data.get("Category", "")), cell_style)],
+        [Paragraph("<b>Priority Level</b>", cell_style), Paragraph(str(po_data.get("Priority", "")), cell_style)],
+        [Paragraph("<b>Estimated Cost ($)</b>", cell_style), Paragraph(str(po_data.get("Estimated Cost ($)", "N/A")), cell_style)],
+        [Paragraph("<b>Actual Cost ($)</b>", cell_style), Paragraph(str(po_data.get("Actual Cost ($)", "N/A")), cell_style)],
+        [Paragraph("<b>Supplier Email</b>", cell_style), Paragraph(str(po_data.get("Supplier Email", "")), cell_style)],
+        [Paragraph("<b>Requested By</b>", cell_style), Paragraph(str(po_data.get("Requested By", "")), cell_style)],
+        [Paragraph("<b>Payment Status</b>", cell_style), Paragraph(str(po_data.get("Payment Status", "Pending")), cell_style)],
+        [Paragraph("<b>Reason / Work Details</b>", cell_style), Paragraph(str(po_data.get("Reason", "")).replace("\n", "<br/>"), reason_style)],
     ]
 
-    table = Table(data, colWidths=[150, 380])
+    table = Table(rows_data, colWidths=[150, 380], repeatRows=1)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (1, 0), colors.HexColor("#581c87")),
         ("TEXTCOLOR", (0, 0), (1, 0), colors.whitesmoke),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f5fc")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#d8b4fe")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
 
@@ -321,14 +339,46 @@ def generate_po_pdf_bytes(po_data):
     buffer.seek(0)
     return buffer.getvalue()
 
+def render_pdf_download_bar(df_source, pdf_label, select_label, key_prefix):
+    """Renders a clean PDF selector + download button at the bottom of the PO log."""
+    po_list = df_source["PO Number"].dropna().astype(str).tolist()
+    if not po_list:
+        return
+    st.markdown("---")
+    st.markdown(f"**{pdf_label}**")
+    c_pdf1, c_pdf2 = st.columns([3, 1])
+    with c_pdf1:
+        chosen_po = st.selectbox(select_label, po_list, key=f"{key_prefix}_select", label_visibility="collapsed")
+    row_match = df_source[df_source["PO Number"].astype(str) == chosen_po]
+    if not row_match.empty:
+        po_dict = row_match.iloc[0].to_dict()
+        pdf_bytes = generate_po_pdf_bytes(po_dict)
+        with c_pdf2:
+            st.download_button(
+                label=f"{TEXTS[st.session_state.get('lang', 'EN')]['download_pdf_btn']} ({chosen_po})",
+                data=pdf_bytes,
+                file_name=f"{chosen_po}.pdf",
+                mime="application/pdf",
+                key=f"{key_prefix}_btn",
+                use_container_width=True
+            )
+
 # ==========================================
 # EMAIL DISPATCH HELPER
 # ==========================================
+def get_smtp_config():
+    smtp_server = str(st.secrets.get("SMTP_SERVER", "") or os.environ.get("SMTP_SERVER", "")).strip()
+    raw_port = st.secrets.get("SMTP_PORT", os.environ.get("SMTP_PORT", 587))
+    try:
+        smtp_port = int(raw_port)
+    except Exception:
+        smtp_port = 587
+    smtp_user = str(st.secrets.get("SMTP_USER", "") or os.environ.get("SMTP_USER", "")).strip()
+    smtp_pass = str(st.secrets.get("SMTP_PASSWORD", "") or os.environ.get("SMTP_PASSWORD", "")).strip()
+    return smtp_server, smtp_port, smtp_user, smtp_pass
+
 def send_po_email(to_email, po_data, pdf_bytes):
-    smtp_server = st.secrets.get("SMTP_SERVER", "")
-    smtp_port = int(st.secrets.get("SMTP_PORT", 587))
-    smtp_user = st.secrets.get("SMTP_USER", "")
-    smtp_pass = st.secrets.get("SMTP_PASSWORD", "")
+    smtp_server, smtp_port, smtp_user, smtp_pass = get_smtp_config()
 
     if not (smtp_server and smtp_user and smtp_pass):
         return False, "SMTP configuration missing in Streamlit Secrets."
@@ -344,9 +394,14 @@ def send_po_email(to_email, po_data, pdf_bytes):
 Please find attached Purchase Order {po_data.get('PO Number')} for service work requested by Indigo Park Canada.
 
 Details:
+- Date: {po_data.get('Date')}
 - CMO Code: {po_data.get('CMO Code')}
+- Vendor: {po_data.get('Vendor')}
+- Category: {po_data.get('Category')}
 - Priority: {po_data.get('Priority')}
+- Estimated Cost ($): {po_data.get('Estimated Cost ($)')}
 - Requested By: {po_data.get('Requested By')}
+- Reason: {po_data.get('Reason')}
 
 Thank you,
 Indigo Park Canada Team
@@ -357,11 +412,17 @@ Indigo Park Canada Team
         attachment.add_header("Content-Disposition", "attachment", filename=f"{po_data.get('PO Number')}.pdf")
         msg.attach(attachment)
 
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-        server.login(smtp_user, smtp_pass)
-        server.send_message(msg)
-        server.quit()
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=20) as server:
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_server, smtp_port, timeout=20) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
         return True, "Success"
     except Exception as e:
         return False, str(e)
@@ -467,7 +528,7 @@ if "custom_users" not in st.session_state:
 
 st.sidebar.image(INDIGO_LOGO_URL, width=200)
 st.sidebar.markdown("---")
-lang = st.sidebar.radio("Language / Langue", ["EN", "FR"], horizontal=True)
+lang = st.sidebar.radio("Language / Langue", ["EN", "FR"], horizontal=True, key="lang")
 t = TEXTS[lang]
 
 if not st.session_state.user_role:
@@ -551,13 +612,11 @@ if st.session_state.user_role == "admin":
                                 st.success(f"Updated {selected_po} successfully!")
                                 st.rerun()
 
-                po_row_dict = df[df["PO Number"].astype(str) == selected_po].iloc[0].to_dict()
-                pdf_bytes = generate_po_pdf_bytes(po_row_dict)
-                st.download_button(
-                    label=f"{t['download_pdf_btn']} ({selected_po})",
-                    data=pdf_bytes,
-                    file_name=f"{selected_po}.pdf",
-                    mime="application/pdf"
+                render_pdf_download_bar(
+                    df,
+                    t["pdf_section"],
+                    t["select_po_pdf"],
+                    "admin_po_pdf"
                 )
 
     with tab_ai:
@@ -714,3 +773,10 @@ else:
                         save_po_data(updated_df)
                         st.success(f"{t['po_erased_msg']} {po_del}")
                         st.rerun()
+
+            render_pdf_download_bar(
+                df,
+                t["pdf_section"],
+                t["select_po_pdf"],
+                "user_po_pdf"
+            )
