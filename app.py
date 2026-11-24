@@ -50,6 +50,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+PAYMENT_CATEGORIES = ["Paid", "Partially Paid", "Pending"]
+
 # English / French UI Dictionary
 TEXTS = {
     "EN": {
@@ -94,10 +96,11 @@ TEXTS = {
         "ai_header": "Ask AI to Search POs",
         "ai_placeholder": "e.g., Find all POs for CMO 1851 or calls to Logic Control...",
         "ai_search_btn": "🔍 Search with AI",
-        "admin_audit_title": "⚙️ Admin Audit & Payment Management",
+        "admin_audit_title": "⚙️ Admin Audit & Payment Groups",
         "actual_cost_label": "Actual Cost ($ CAD)",
-        "payment_status_label": "Payment Status",
-        "update_po_btn": "Update PO Status & Actual Amount",
+        "payment_status_label": "Assign Status Category (Required)",
+        "select_category_err": "Please select a payment status category before updating.",
+        "update_po_btn": "Update PO & Assign Category",
         "create_user_header": "Create New User Account",
         "new_username_label": "New Username",
         "new_password_label": "New Password",
@@ -150,10 +153,11 @@ TEXTS = {
         "ai_header": "Interroger l'IA sur les PO",
         "ai_placeholder": "ex: Trouve tous les PO du CMO 1851 ou les appels faits à Logic Control...",
         "ai_search_btn": "🔍 Rechercher avec l'IA",
-        "admin_audit_title": "⚙️ Audit Admin & Gestion des Paiements",
+        "admin_audit_title": "⚙️ Audit Admin & Groupes de Paiement",
         "actual_cost_label": "Coût Réel ($ CAD)",
-        "payment_status_label": "Statut du Paiement",
-        "update_po_btn": "Mettre à jour le PO",
+        "payment_status_label": "Catégorie de Statut Requise",
+        "select_category_err": "Veuillez choisir une catégorie de statut avant de mettre à jour.",
+        "update_po_btn": "Mettre à jour & Classer le PO",
         "create_user_header": "Créer un nouveau compte utilisateur",
         "new_username_label": "Nouveau nom d'utilisateur",
         "new_password_label": "Nouveau mot de passe",
@@ -272,6 +276,14 @@ def authenticate(username, password):
         return users[u]["role"]
     return None
 
+def normalize_payment_status(raw_status):
+    s = str(raw_status or "").strip().lower()
+    if s == "paid":
+        return "Paid"
+    if s in ("partially paid", "partial paid", "partial"):
+        return "Partially Paid"
+    return "Pending"
+
 # ==========================================
 # PDF & EMAIL DRAFT HELPERS
 # ==========================================
@@ -343,25 +355,30 @@ def generate_po_pdf_bytes(po_data):
     return buffer.getvalue()
 
 def build_language_mailto_url(po_data, lang_code):
-    """Builds a mailto link strictly in EN or FR with PO number, customer/CMO name, and PDF attached note."""
+    """Builds a friendly mailto link strictly in EN or FR with supplier name, PO number, customer name, PDF note, and thank-you."""
     to_addr = str(po_data.get("Supplier Email", "") or "").strip()
     req_email = str(po_data.get("Requester Email", "") or "").strip()
     po_num = str(po_data.get("PO Number", "") or "").strip()
     customer_name = str(po_data.get("CMO Code", "") or "").strip()
+    supplier_name = str(po_data.get("Vendor", "") or "").strip()
 
     if lang_code == "FR":
         subject = f"Bon de commande {po_num} - {customer_name}"
         body = (
+            f"Bonjour {supplier_name},\n\n"
             f"Numéro de PO : {po_num}\n"
             f"Client : {customer_name}\n"
-            f"Ci-joint le bon de commande PDF."
+            f"Ci-joint le bon de commande PDF.\n\n"
+            f"Merci beaucoup pour votre collaboration !"
         )
     else:
         subject = f"Purchase Order {po_num} - {customer_name}"
         body = (
+            f"Hello {supplier_name},\n\n"
             f"PO Number: {po_num}\n"
             f"Customer: {customer_name}\n"
-            f"See PDF PO attached."
+            f"See PDF PO attached.\n\n"
+            f"Thank you very much for your support!"
         )
 
     params = {"subject": subject, "body": body}
@@ -419,6 +436,7 @@ def load_po_data():
             for col in COLUMNS:
                 if col not in df.columns:
                     df[col] = ""
+            df["Payment Status"] = df["Payment Status"].apply(normalize_payment_status)
             return df[COLUMNS]
         except Exception:
             pass
@@ -428,6 +446,7 @@ def load_po_data():
         for col in COLUMNS:
             if col not in df.columns:
                 df[col] = ""
+        df["Payment Status"] = df["Payment Status"].apply(normalize_payment_status)
         return df[COLUMNS]
 
     df = pd.DataFrame(columns=COLUMNS)
@@ -437,6 +456,7 @@ def load_po_data():
 def save_po_data(df):
     clean_df = df[COLUMNS].copy() if not df.empty else pd.DataFrame(columns=COLUMNS)
     clean_df = clean_df.astype(str)
+    clean_df["Payment Status"] = clean_df["Payment Status"].apply(normalize_payment_status)
     clean_df.to_excel(EXCEL_FILE, index=False)
 
     ws = get_gsheet_worksheet("PO_Log", COLUMNS)
@@ -547,41 +567,74 @@ if st.session_state.user_role == "admin":
                 if search_q else df
             )
 
-            st.dataframe(filtered_df, use_container_width=True)
+            # Grouped view by payment category: Pending, Partially Paid, Paid
+            g_pending, g_partial, g_paid = st.tabs([
+                f"⏳ Pending ({len(filtered_df[filtered_df['Payment Status'] == 'Pending'])})",
+                f"🌓 Partially Paid ({len(filtered_df[filtered_df['Payment Status'] == 'Partially Paid'])})",
+                f"✅ Paid ({len(filtered_df[filtered_df['Payment Status'] == 'Paid'])})"
+            ])
+
+            with g_pending:
+                st.dataframe(
+                    filtered_df[filtered_df["Payment Status"] == "Pending"],
+                    use_container_width=True
+                )
+            with g_partial:
+                st.dataframe(
+                    filtered_df[filtered_df["Payment Status"] == "Partially Paid"],
+                    use_container_width=True
+                )
+            with g_paid:
+                st.dataframe(
+                    filtered_df[filtered_df["Payment Status"] == "Paid"],
+                    use_container_width=True
+                )
 
             st.markdown("---")
-            st.markdown("### Update Status & Actual Amount")
-            po_list = filtered_df["PO Number"].dropna().astype(str).tolist()
+            st.markdown("### Update PO & Assign Category")
+            # Allow selecting from ALL POs in df so an already-updated PO can be re-updated anytime
+            all_po_list = df["PO Number"].dropna().astype(str).tolist()
 
-            if po_list:
+            if all_po_list:
                 c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
                 with c1:
-                    selected_po = st.selectbox("Select PO Number", po_list)
+                    selected_po = st.selectbox("Select PO Number", all_po_list, key="admin_update_po_select")
+                current_row = df[df["PO Number"].astype(str) == selected_po].iloc[0]
                 with c2:
-                    actual_cost_in = st.text_input(t["actual_cost_label"], value="", placeholder="e.g. 450.00 or NA")
+                    actual_cost_in = st.text_input(
+                        t["actual_cost_label"],
+                        value=str(current_row.get("Actual Cost ($)", "")),
+                        placeholder="e.g. 450.00 or NA",
+                        key="admin_actual_cost_in"
+                    )
                 with c3:
-                    pay_status = st.radio(
+                    # Mandatory category selection (no default/empty choice; must explicitly pick a category)
+                    category_options = ["— Select Category —"] + PAYMENT_CATEGORIES
+                    chosen_category = st.selectbox(
                         t["payment_status_label"],
-                        ["Pending", "Partial Paid", "Paid"],
-                        horizontal=True
+                        category_options,
+                        index=0,
+                        key="admin_payment_cat_select"
                     )
                 with c4:
                     st.markdown("<div style='padding-top: 25px;'></div>", unsafe_allow_html=True)
-                    if st.button(t["update_po_btn"], use_container_width=True):
+                    if st.button(t["update_po_btn"], use_container_width=True, key="admin_update_po_btn"):
                         parsed_act, act_ok = parse_cost_input(actual_cost_in)
-                        if not act_ok:
-                            st.error("Invalid actual cost format.")
+                        if chosen_category not in PAYMENT_CATEGORIES:
+                            st.error(t["select_category_err"])
+                        elif not act_ok:
+                            st.error(t["invalid_cost"])
                         else:
                             idx = df[df["PO Number"].astype(str) == selected_po].index
                             if not idx.empty:
                                 df.loc[idx, "Actual Cost ($)"] = parsed_act
-                                df.loc[idx, "Payment Status"] = pay_status
+                                df.loc[idx, "Payment Status"] = chosen_category
                                 save_po_data(df)
-                                st.success(f"Updated {selected_po} successfully!")
+                                st.success(f"Updated {selected_po} -> {chosen_category}")
                                 st.rerun()
 
                 render_pdf_download_bar(
-                    df,
+                    filtered_df if not filtered_df.empty else df,
                     t["pdf_section"],
                     t["select_po_pdf"],
                     "admin_po_pdf"
