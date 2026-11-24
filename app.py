@@ -804,8 +804,3 @@ else:
                 t["select_po_pdf"],
                 "user_po_pdf"
             )
-
-<ElicitationsGroup message="What would you like to do next?">
-  <Elicitation label="Set up persistent Excel/Sheet storage" query="Let's set up persistent storage so POs stay saved when Streamlit goes to sleep or reboots."/>
-  <Elicitation label="Add PDF button to Admin rows" query="Can we also add a direct PDF download button for each PO inside the Admin PO Log?"/>
-</ElicitationsGroup>
