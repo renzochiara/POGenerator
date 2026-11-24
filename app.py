@@ -1,14 +1,12 @@
 import io
 import os
 import random
-import smtplib
+import urllib.parse
 from datetime import datetime
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -49,6 +47,19 @@ st.markdown("""
         background-color: #7e22ce;
         color: white;
     }
+    a.mailto-btn {
+        display: inline-block;
+        background-color: #581c87;
+        color: white !important;
+        font-weight: bold;
+        text-decoration: none;
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        margin-top: 0.25rem;
+    }
+    a.mailto-btn:hover {
+        background-color: #7e22ce;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -56,14 +67,14 @@ st.markdown("""
 TEXTS = {
     "EN": {
         "title": "Indigo Park Canada - Service PO Generator",
-        "subtitle": "Create, log, email, and audit Purchase Orders for service calls",
+        "subtitle": "Create, log, export PDF, and audit Purchase Orders for service calls",
         "login_title": "🔐 Login to Indigo PO Portal",
         "username": "Username",
         "password": "Password",
         "login_btn": "Sign In",
         "logout_btn": "Sign Out",
         "invalid_login": "Invalid username or password.",
-        "new_po_tab": "➕ Create & Send PO",
+        "new_po_tab": "➕ Create PO & PDF",
         "history_tab": "📋 PO Log",
         "ai_tab": "🤖 AI Search Assistant",
         "users_tab": "👤 Manage Users",
@@ -76,13 +87,13 @@ TEXTS = {
         "cat_other_label": "Specify Custom Category Name",
         "priority": "Priority Level",
         "est_cost": "Estimated Cost ($ CAD) — enter amount or NA",
+        "user_email": "Your Email Address (Requester)",
         "supplier_email": "Supplier / Vendor Email Address",
         "requested_by": "Requested By (Your Name)",
-        "generate_btn": "Generate & Save PO",
-        "send_email_btn": "✉️ Generate PO & Email Directly to Supplier",
+        "generate_and_open_btn": "✉️ Generate PO & Open Email",
         "success_msg": "PO Generated and Saved Successfully!",
-        "email_sent_msg": "PO PDF emailed successfully to supplier!",
-        "email_failed_msg": "PO saved, but failed to send email. Check SMTP credentials.",
+        "draft_note": "Your email draft opens with the supplier's address filled in. Browser security blocks auto-attaching local files, so attach the downloaded PDF and press Send.",
+        "open_email_link": "✉️ Open My Email Draft Now",
         "search_label": "Filter by CMO Code or Vendor:",
         "delete_section": "🗑️ Erase a Mistaken PO",
         "select_po_delete": "Select PO Number to erase:",
@@ -110,14 +121,14 @@ TEXTS = {
     },
     "FR": {
         "title": "Indigo Park Canada - Générateur de Bon de Commande",
-        "subtitle": "Créer, consigner, envoyer par courriel et auditer les bons de commande",
+        "subtitle": "Créer, consigner, exporter en PDF et auditer les bons de commande",
         "login_title": "🔐 Connexion Portail PO Indigo",
         "username": "Nom d'utilisateur",
         "password": "Mot de passe",
         "login_btn": "Se connecter",
         "logout_btn": "Se déconnecter",
         "invalid_login": "Nom d'utilisateur ou mot de passe invalide.",
-        "new_po_tab": "➕ Créer & Envoyer PO",
+        "new_po_tab": "➕ Créer PO & PDF",
         "history_tab": "📋 Registre PO",
         "ai_tab": "🤖 Assistant Recherche IA",
         "users_tab": "👤 Gestion Utilisateurs",
@@ -130,13 +141,13 @@ TEXTS = {
         "cat_other_label": "Préciser la catégorie personnalisée",
         "priority": "Niveau de Priorité",
         "est_cost": "Coût Estimé ($ CAD) — entrer un montant ou NA",
+        "user_email": "Votre courriel (Demandeur)",
         "supplier_email": "Courriel du Fournisseur",
         "requested_by": "Demandé par (Votre nom)",
-        "generate_btn": "Générer et Enregistrer le PO",
-        "send_email_btn": "✉️ Générer & Envoyer le PO au Fournisseur",
+        "generate_and_open_btn": "✉️ Générer le PO & Ouvrir Courriel",
         "success_msg": "PO généré et enregistré avec succès!",
-        "email_sent_msg": "Le PO a été envoyé par courriel au fournisseur!",
-        "email_failed_msg": "PO enregistré, mais échec de l'envoi du courriel.",
+        "draft_note": "Votre brouillon courriel s'ouvre avec l'adresse du fournisseur déjà remplie. Pour des raisons de sécurité du navigateur, joignez le PDF téléchargé puis envoyez.",
+        "open_email_link": "✉️ Ouvrir mon brouillon courriel maintenant",
         "search_label": "Filtrer par code CMO ou fournisseur:",
         "delete_section": "🗑️ Effacer un PO en cas d'erreur",
         "select_po_delete": "Choisir le numéro de PO à effacer :",
@@ -167,7 +178,7 @@ TEXTS = {
 COLUMNS = [
     "PO Number", "Date", "CMO Code", "Vendor", "Category",
     "Priority", "Estimated Cost ($)", "Actual Cost ($)",
-    "Supplier Email", "Reason", "Requested By", "Payment Status"
+    "Requester Email", "Supplier Email", "Reason", "Requested By", "Payment Status"
 ]
 EXCEL_FILE = "po_log.xlsx"
 INDIGO_LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/Indigo_Group_logo.svg/320px-Indigo_Group_logo.svg.png"
@@ -205,7 +216,7 @@ def get_gsheet_worksheet(title="PO_Log", headers=COLUMNS):
         try:
             return spreadsheet.worksheet(title)
         except gspread.WorksheetNotFound:
-            ws = spreadsheet.add_worksheet(title=title, rows=1000, cols=15)
+            ws = spreadsheet.add_worksheet(title=title, rows=1000, cols=16)
             ws.append_row(headers)
             return ws
     except Exception:
@@ -271,7 +282,7 @@ def authenticate(username, password):
     return None
 
 # ==========================================
-# PDF GENERATION HELPER
+# PDF & EMAIL DRAFT HELPERS
 # ==========================================
 def generate_po_pdf_bytes(po_data):
     buffer = io.BytesIO()
@@ -315,8 +326,9 @@ def generate_po_pdf_bytes(po_data):
         [Paragraph("<b>Priority Level</b>", cell_style), Paragraph(str(po_data.get("Priority", "")), cell_style)],
         [Paragraph("<b>Estimated Cost ($)</b>", cell_style), Paragraph(str(po_data.get("Estimated Cost ($)", "N/A")), cell_style)],
         [Paragraph("<b>Actual Cost ($)</b>", cell_style), Paragraph(str(po_data.get("Actual Cost ($)", "N/A")), cell_style)],
-        [Paragraph("<b>Supplier Email</b>", cell_style), Paragraph(str(po_data.get("Supplier Email", "")), cell_style)],
         [Paragraph("<b>Requested By</b>", cell_style), Paragraph(str(po_data.get("Requested By", "")), cell_style)],
+        [Paragraph("<b>Requester Email</b>", cell_style), Paragraph(str(po_data.get("Requester Email", "")), cell_style)],
+        [Paragraph("<b>Supplier Email</b>", cell_style), Paragraph(str(po_data.get("Supplier Email", "")), cell_style)],
         [Paragraph("<b>Payment Status</b>", cell_style), Paragraph(str(po_data.get("Payment Status", "Pending")), cell_style)],
         [Paragraph("<b>Reason / Work Details</b>", cell_style), Paragraph(str(po_data.get("Reason", "")).replace("\n", "<br/>"), reason_style)],
     ]
@@ -339,8 +351,65 @@ def generate_po_pdf_bytes(po_data):
     buffer.seek(0)
     return buffer.getvalue()
 
+def build_mailto_url(po_data):
+    to_addr = str(po_data.get("Supplier Email", "") or "").strip()
+    req_email = str(po_data.get("Requester Email", "") or "").strip()
+    po_num = str(po_data.get("PO Number", "") or "")
+    cmo = str(po_data.get("CMO Code", "") or "")
+    vendor = str(po_data.get("Vendor", "") or "")
+    priority = str(po_data.get("Priority", "") or "")
+    est_cost = str(po_data.get("Estimated Cost ($)", "N/A") or "N/A")
+    req_by = str(po_data.get("Requested By", "") or "")
+    reason = str(po_data.get("Reason", "") or "")
+
+    subject = f"Indigo Park Canada - Purchase Order {po_num} ({cmo})"
+    body = (
+        f"Hello {vendor},\n\n"
+        f"Please find Purchase Order {po_num} for service work at {cmo}.\n\n"
+        f"Summary:\n"
+        f"- PO Number: {po_num}\n"
+        f"- Date: {po_data.get('Date', '')}\n"
+        f"- CMO Code: {cmo}\n"
+        f"- Category: {po_data.get('Category', '')}\n"
+        f"- Priority: {priority}\n"
+        f"- Estimated Cost ($): {est_cost}\n"
+        f"- Requested By: {req_by} ({req_email})\n"
+        f"- Details: {reason}\n\n"
+        f"(Please attach {po_num}.pdf before sending.)\n\n"
+        f"Thank you,\n"
+        f"Indigo Park Canada"
+    )
+    params = {"subject": subject, "body": body}
+    if req_email:
+        params["cc"] = req_email
+    query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+    return f"mailto:{urllib.parse.quote(to_addr)}?{query}"
+
+def trigger_auto_pdf_and_mailto(po_data, pdf_bytes):
+    """Triggers automatic browser download of the PDF and opens mailto draft."""
+    import base64
+    b64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+    filename = f"{po_data.get('PO Number', 'PO')}.pdf"
+    mailto_href = build_mailto_url(po_data)
+
+    html_snippet = f"""
+    <script>
+      (function() {{
+        const link = document.createElement('a');
+        link.href = 'data:application/pdf;base64,{b64_pdf}';
+        link.download = '{filename}';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(function() {{
+          window.open('{mailto_href}', '_self');
+        }}, 350);
+      }})();
+    </script>
+    """
+    components.html(html_snippet, height=0)
+
 def render_pdf_download_bar(df_source, pdf_label, select_label, key_prefix):
-    """Renders a clean PDF selector + download button at the bottom of the PO log."""
     po_list = df_source["PO Number"].dropna().astype(str).tolist()
     if not po_list:
         return
@@ -362,70 +431,6 @@ def render_pdf_download_bar(df_source, pdf_label, select_label, key_prefix):
                 key=f"{key_prefix}_btn",
                 use_container_width=True
             )
-
-# ==========================================
-# EMAIL DISPATCH HELPER
-# ==========================================
-def get_smtp_config():
-    smtp_server = str(st.secrets.get("SMTP_SERVER", "") or os.environ.get("SMTP_SERVER", "")).strip()
-    raw_port = st.secrets.get("SMTP_PORT", os.environ.get("SMTP_PORT", 587))
-    try:
-        smtp_port = int(raw_port)
-    except Exception:
-        smtp_port = 587
-    smtp_user = str(st.secrets.get("SMTP_USER", "") or os.environ.get("SMTP_USER", "")).strip()
-    smtp_pass = str(st.secrets.get("SMTP_PASSWORD", "") or os.environ.get("SMTP_PASSWORD", "")).strip()
-    return smtp_server, smtp_port, smtp_user, smtp_pass
-
-def send_po_email(to_email, po_data, pdf_bytes):
-    smtp_server, smtp_port, smtp_user, smtp_pass = get_smtp_config()
-
-    if not (smtp_server and smtp_user and smtp_pass):
-        return False, "SMTP configuration missing in Streamlit Secrets."
-
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = smtp_user
-        msg["To"] = to_email
-        msg["Subject"] = f"Indigo Park Canada - Purchase Order {po_data.get('PO Number')}"
-
-        body = f"""Hello,
-
-Please find attached Purchase Order {po_data.get('PO Number')} for service work requested by Indigo Park Canada.
-
-Details:
-- Date: {po_data.get('Date')}
-- CMO Code: {po_data.get('CMO Code')}
-- Vendor: {po_data.get('Vendor')}
-- Category: {po_data.get('Category')}
-- Priority: {po_data.get('Priority')}
-- Estimated Cost ($): {po_data.get('Estimated Cost ($)')}
-- Requested By: {po_data.get('Requested By')}
-- Reason: {po_data.get('Reason')}
-
-Thank you,
-Indigo Park Canada Team
-"""
-        msg.attach(MIMEText(body, "plain"))
-
-        attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
-        attachment.add_header("Content-Disposition", "attachment", filename=f"{po_data.get('PO Number')}.pdf")
-        msg.attach(attachment)
-
-        if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=20) as server:
-                server.login(smtp_user, smtp_pass)
-                server.send_message(msg)
-        else:
-            with smtplib.SMTP(smtp_server, smtp_port, timeout=20) as server:
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                server.login(smtp_user, smtp_pass)
-                server.send_message(msg)
-        return True, "Success"
-    except Exception as e:
-        return False, str(e)
 
 # ==========================================
 # COST PARSER & DATA HELPERS
@@ -525,6 +530,8 @@ if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 if "custom_users" not in st.session_state:
     st.session_state.custom_users = {}
+if "last_created_po" not in st.session_state:
+    st.session_state.last_created_po = None
 
 st.sidebar.image(INDIGO_LOGO_URL, width=200)
 st.sidebar.markdown("---")
@@ -696,6 +703,8 @@ else:
                 if cat_choice == "Other":
                     cat_other = st.text_input(t["cat_other_label"])
 
+                requester_email = st.text_input(t["user_email"], placeholder="you@company.com")
+
             with col2:
                 priority = st.select_slider(t["priority"], options=["Normal", "Urgent", "Emergency"])
                 est_cost_raw = st.text_input(t["est_cost"], value="NA")
@@ -704,13 +713,9 @@ else:
 
             work_reason = st.text_area(t["work_reason"])
 
-            col_btn1, col_btn2 = st.columns(2)
-            with col_btn1:
-                sub_save_only = st.form_submit_button(t["generate_btn"], use_container_width=True)
-            with col_btn2:
-                sub_send_email = st.form_submit_button(t["send_email_btn"], use_container_width=True)
+            sub_gen_open = st.form_submit_button(t["generate_and_open_btn"], use_container_width=True)
 
-        if sub_save_only or sub_send_email:
+        if sub_gen_open:
             final_vendor = vendor_other if vendor_choice == "Other" else vendor_choice
             final_cat = cat_other if cat_choice == "Other" else cat_choice
             parsed_cost, cost_ok = parse_cost_input(est_cost_raw)
@@ -719,8 +724,6 @@ else:
                 st.error("Please fill in CMO Code, Vendor, Reason, and Requested By.")
             elif not cost_ok:
                 st.error(t["invalid_cost"])
-            elif sub_send_email and not supplier_email:
-                st.error("Supplier email is required to send the PO.")
             else:
                 po_num = generate_po_number()
                 date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -734,7 +737,8 @@ else:
                     "Priority": priority,
                     "Estimated Cost ($)": parsed_cost,
                     "Actual Cost ($)": "N/A",
-                    "Supplier Email": supplier_email,
+                    "Requester Email": requester_email.strip(),
+                    "Supplier Email": supplier_email.strip(),
                     "Reason": work_reason,
                     "Requested By": requested_by,
                     "Payment Status": "Pending"
@@ -744,15 +748,35 @@ else:
                 df = pd.concat([pd.DataFrame([new_record]), df], ignore_index=True)
                 save_po_data(df)
 
+                pdf_bytes = generate_po_pdf_bytes(new_record)
+                st.session_state.last_created_po = {
+                    "record": new_record,
+                    "pdf_bytes": pdf_bytes
+                }
                 st.success(f"{t['success_msg']} **PO #: {po_num}**")
+                trigger_auto_pdf_and_mailto(new_record, pdf_bytes)
 
-                if sub_send_email:
-                    pdf_bytes = generate_po_pdf_bytes(new_record)
-                    success, err = send_po_email(supplier_email, new_record, pdf_bytes)
-                    if success:
-                        st.info(t["email_sent_msg"])
-                    else:
-                        st.warning(f"{t['email_failed_msg']} ({err})")
+        if st.session_state.last_created_po:
+            created_rec = st.session_state.last_created_po["record"]
+            created_pdf = st.session_state.last_created_po["pdf_bytes"]
+            st.markdown("---")
+            st.info(t["draft_note"])
+            b_col1, b_col2 = st.columns(2)
+            with b_col1:
+                st.download_button(
+                    label=f"{t['download_pdf_btn']} ({created_rec['PO Number']})",
+                    data=created_pdf,
+                    file_name=f"{created_rec['PO Number']}.pdf",
+                    mime="application/pdf",
+                    key="re_dl_created_pdf",
+                    use_container_width=True
+                )
+            with b_col2:
+                mailto_href = build_mailto_url(created_rec)
+                st.markdown(
+                    f'<a class="mailto-btn" href="{mailto_href}">{t["open_email_link"]}</a>',
+                    unsafe_allow_html=True
+                )
 
     with tab2:
         st.subheader(t["history_tab"])
@@ -780,3 +804,8 @@ else:
                 t["select_po_pdf"],
                 "user_po_pdf"
             )
+
+<ElicitationsGroup message="What would you like to do next?">
+  <Elicitation label="Set up persistent Excel/Sheet storage" query="Let's set up persistent storage so POs stay saved when Streamlit goes to sleep or reboots."/>
+  <Elicitation label="Add PDF button to Admin rows" query="Can we also add a direct PDF download button for each PO inside the Admin PO Log?"/>
+</ElicitationsGroup>
