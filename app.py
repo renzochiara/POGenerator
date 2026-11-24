@@ -6,7 +6,6 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -37,15 +36,16 @@ st.set_page_config(
 
 st.markdown("""
     <style>
-    .stButton>button {
+    .stButton>button, .stLinkButton>a {
         background-color: #581c87;
-        color: white;
+        color: white !important;
         font-weight: bold;
         border-radius: 8px;
+        text-decoration: none;
     }
-    .stButton>button:hover {
+    .stButton>button:hover, .stLinkButton>a:hover {
         background-color: #7e22ce;
-        color: white;
+        color: white !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -369,22 +369,6 @@ def build_language_mailto_url(po_data, lang_code):
         params["cc"] = req_email
     query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     return f"mailto:{urllib.parse.quote(to_addr)}?{query}"
-
-def render_email_link_button(po_data, lang_code, link_label):
-    """Renders a direct top-level mailto link only (no automatic PDF download)."""
-    mailto_href = build_language_mailto_url(po_data, lang_code)
-    html_link = f"""
-    <div style="width: 100%;">
-      <a href="{mailto_href}" target="_top"
-         style="display: block; width: 100%; text-align: center; background-color: #581c87;
-                color: #ffffff; font-weight: bold; text-decoration: none;
-                padding: 0.52rem 1rem; border-radius: 8px; box-sizing: border-box;
-                font-family: sans-serif; font-size: 0.95rem;">
-        {link_label}
-      </a>
-    </div>
-    """
-    components.html(html_link, height=52)
 
 def render_pdf_download_bar(df_source, pdf_label, select_label, key_prefix):
     po_list = df_source["PO Number"].dropna().astype(str).tolist()
@@ -748,10 +732,11 @@ else:
                     use_container_width=True
                 )
             with b_col2:
-                render_email_link_button(
-                    created_rec,
-                    lang,
-                    t["open_email_btn"]
+                mailto_href = build_language_mailto_url(created_rec, lang)
+                st.link_button(
+                    label=t["open_email_btn"],
+                    url=mailto_href,
+                    use_container_width=True
                 )
 
     with tab2:
