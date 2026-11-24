@@ -63,7 +63,7 @@ TEXTS = {
         "login_btn": "Sign In",
         "logout_btn": "Sign Out",
         "invalid_login": "Invalid username or password.",
-        "invalid_cost": "Please enter a valid non-negative number or NA.",
+        "invalid_cost": "Please enter a valid non-negative number (e.g. 250.00) or NA.",
         "missing_secret": "GROQ_API_KEY is missing in Streamlit Secrets.",
         "new_po_tab": "➕ Create PO & PDF",
         "history_tab": "📋 PO Log",
@@ -85,7 +85,7 @@ TEXTS = {
         "success_msg": "PO Generated and Saved Successfully!",
         "draft_note": "Download the PDF with the PDF button and open your email link to launch your email draft with the supplier and user emails filled in, then attach the PDF before sending.",
         "open_email_btn": "✉️ Open Email Link",
-        "search_label": "Filter by CMO Code or Vendor:",
+        "search_label": "Search POs (PO #, CMO, Vendor, Email, Reason, Requester):",
         "delete_section": "🗑️ Erase a Mistaken PO",
         "select_po_delete": "Select PO Number to erase:",
         "delete_po_btn": "Erase Selected PO",
@@ -120,7 +120,7 @@ TEXTS = {
         "login_btn": "Se connecter",
         "logout_btn": "Se déconnecter",
         "invalid_login": "Nom d'utilisateur ou mot de passe invalide.",
-        "invalid_cost": "Veuillez entrer un montant positif valide ou NA.",
+        "invalid_cost": "Veuillez entrer un montant positif valide (ex. 250.00) ou NA.",
         "missing_secret": "GROQ_API_KEY est manquant dans les Secrets Streamlit.",
         "new_po_tab": "➕ Créer PO & PDF",
         "history_tab": "📋 Registre PO",
@@ -142,7 +142,7 @@ TEXTS = {
         "success_msg": "PO généré et enregistré avec succès!",
         "draft_note": "Téléchargez le PDF avec le bouton PDF et ouvrez le lien courriel pour lancer votre brouillon avec les courriels du fournisseur et de l'utilisateur remplis, puis joignez le PDF avant d'envoyer.",
         "open_email_btn": "✉️ Ouvrir le lien courriel",
-        "search_label": "Filtrer par code CMO ou fournisseur:",
+        "search_label": "Rechercher PO (N° PO, CMO, Fournisseur, Courriel, Raison) :",
         "delete_section": "🗑️ Effacer un PO en cas d'erreur",
         "select_po_delete": "Choisir le numéro de PO à effacer :",
         "delete_po_btn": "Effacer le PO sélectionné",
@@ -209,11 +209,19 @@ def get_gsheet_worksheet(title="PO_Log", headers=COLUMNS):
         return None
     try:
         try:
-            return spreadsheet.worksheet(title)
+            ws = spreadsheet.worksheet(title)
         except gspread.WorksheetNotFound:
             ws = spreadsheet.add_worksheet(title=title, rows=1000, cols=16)
             ws.append_row(headers)
             return ws
+
+        existing_vals = ws.get_all_values()
+        if not existing_vals:
+            ws.append_row(headers)
+        elif existing_vals[0] != headers:
+            # Ensure header row matches exact COLUMNS schema so columns never shift
+            ws.update("A1", [headers])
+        return ws
     except Exception:
         return None
 
@@ -283,6 +291,24 @@ def normalize_payment_status(raw_status):
     if s in ("partially paid", "partial paid", "partial"):
         return "Partially Paid"
     return "Pending"
+
+def sanitize_po_dataframe(raw_df):
+    """Enforces exact column names, string values, and valid payment status per column."""
+    if raw_df is None or raw_df.empty:
+        return pd.DataFrame(columns=COLUMNS)
+
+    df = raw_df.copy()
+    for col in COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    df = df[COLUMNS].fillna("")
+
+    for col in COLUMNS:
+        df[col] = df[col].apply(lambda x: "" if str(x).strip().lower() == "nan" else str(x).strip())
+
+    # Guard against legacy rows where Payment Status held something non-status
+    df["Payment Status"] = df["Payment Status"].apply(normalize_payment_status)
+    return df
 
 # ==========================================
 # PDF & EMAIL DRAFT HELPERS
@@ -429,41 +455,37 @@ def load_po_data():
     ws = get_gsheet_worksheet("PO_Log", COLUMNS)
     if ws is not None:
         try:
-            records = ws.get_all_records()
-            if not records:
-                return pd.DataFrame(columns=COLUMNS)
-            df = pd.DataFrame(records, dtype=str)
-            for col in COLUMNS:
-                if col not in df.columns:
-                    df[col] = ""
-            df["Payment Status"] = df["Payment Status"].apply(normalize_payment_status)
-            return df[COLUMNS]
+            all_vals = ws.get_all_values()
+            if len(all_vals) > 1:
+                header = all_vals[0]
+                rows = all_vals[1:]
+                normalized_rows = []
+                for r in rows:
+                    padded = r + [""] * max(0, len(header) - len(r))
+                    row_map = {header[i].strip(): padded[i].strip() for i in range(len(header))}
+                    normalized_rows.append({col: row_map.get(col, "") for col in COLUMNS})
+                return sanitize_po_dataframe(pd.DataFrame(normalized_rows))
+            return pd.DataFrame(columns=COLUMNS)
         except Exception:
             pass
 
     if os.path.exists(EXCEL_FILE):
         df = pd.read_excel(EXCEL_FILE, dtype=str)
-        for col in COLUMNS:
-            if col not in df.columns:
-                df[col] = ""
-        df["Payment Status"] = df["Payment Status"].apply(normalize_payment_status)
-        return df[COLUMNS]
+        return sanitize_po_dataframe(df)
 
     df = pd.DataFrame(columns=COLUMNS)
     df.to_excel(EXCEL_FILE, index=False)
     return df
 
 def save_po_data(df):
-    clean_df = df[COLUMNS].copy() if not df.empty else pd.DataFrame(columns=COLUMNS)
-    clean_df = clean_df.astype(str)
-    clean_df["Payment Status"] = clean_df["Payment Status"].apply(normalize_payment_status)
+    clean_df = sanitize_po_dataframe(df)
     clean_df.to_excel(EXCEL_FILE, index=False)
 
     ws = get_gsheet_worksheet("PO_Log", COLUMNS)
     if ws is not None:
         ws.clear()
         rows = [COLUMNS] + clean_df.fillna("").values.tolist()
-        ws.update(rows)
+        ws.update("A1", rows)
 
 def generate_po_number():
     today = datetime.now().strftime("%Y%m%d")
@@ -502,6 +524,15 @@ def query_groq_ai(query, df, missing_secret_msg):
     except Exception as e:
         return f"⚠️ Groq API Error: {str(e)}"
 
+def filter_po_dataframe(df, query_text):
+    q = str(query_text or "").strip().lower()
+    if not q:
+        return df
+    mask = pd.Series(False, index=df.index)
+    for col in COLUMNS:
+        mask = mask | df[col].astype(str).str.lower().str.contains(q, na=False, regex=False)
+    return df[mask]
+
 # ==========================================
 # SESSION STATE & AUTH FLOW
 # ==========================================
@@ -513,6 +544,8 @@ if "custom_users" not in st.session_state:
     st.session_state.custom_users = {}
 if "last_created_po" not in st.session_state:
     st.session_state.last_created_po = None
+if "last_selected_admin_po" not in st.session_state:
+    st.session_state.last_selected_admin_po = None
 
 st.sidebar.image(INDIGO_LOGO_URL, width=200)
 st.sidebar.markdown("---")
@@ -558,16 +591,9 @@ if st.session_state.user_role == "admin":
         if df.empty:
             st.info("No PO records found.")
         else:
-            search_q = st.text_input(t["search_label"], "").upper()
-            filtered_df = (
-                df[
-                    df["CMO Code"].astype(str).str.contains(search_q, na=False)
-                    | df["Vendor"].astype(str).str.contains(search_q, case=False, na=False)
-                ]
-                if search_q else df
-            )
+            search_q = st.text_input(t["search_label"], "")
+            filtered_df = filter_po_dataframe(df, search_q)
 
-            # Grouped view by payment category: Pending, Partially Paid, Paid
             g_pending, g_partial, g_paid = st.tabs([
                 f"⏳ Pending ({len(filtered_df[filtered_df['Payment Status'] == 'Pending'])})",
                 f"🌓 Partially Paid ({len(filtered_df[filtered_df['Payment Status'] == 'Partially Paid'])})",
@@ -592,23 +618,29 @@ if st.session_state.user_role == "admin":
 
             st.markdown("---")
             st.markdown("### Update PO & Assign Category")
-            # Allow selecting from ALL POs in df so an already-updated PO can be re-updated anytime
             all_po_list = df["PO Number"].dropna().astype(str).tolist()
 
             if all_po_list:
                 c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
                 with c1:
                     selected_po = st.selectbox("Select PO Number", all_po_list, key="admin_update_po_select")
+
                 current_row = df[df["PO Number"].astype(str) == selected_po].iloc[0]
+                current_actual = str(current_row.get("Actual Cost ($)", "")).strip()
+                default_actual = "" if current_actual.upper() in ("", "N/A", "NA", "NONE") else current_actual
+
+                # Sync actual cost input whenever user switches to another PO
+                if st.session_state.last_selected_admin_po != selected_po:
+                    st.session_state.last_selected_admin_po = selected_po
+                    st.session_state.admin_actual_cost_in = default_actual
+
                 with c2:
                     actual_cost_in = st.text_input(
                         t["actual_cost_label"],
-                        value=str(current_row.get("Actual Cost ($)", "")),
                         placeholder="e.g. 450.00 or NA",
                         key="admin_actual_cost_in"
                     )
                 with c3:
-                    # Mandatory category selection (no default/empty choice; must explicitly pick a category)
                     category_options = ["— Select Category —"] + PAYMENT_CATEGORIES
                     chosen_category = st.selectbox(
                         t["payment_status_label"],
@@ -796,7 +828,9 @@ else:
         st.subheader(t["history_tab"])
         df = load_po_data()
         if not df.empty:
-            st.dataframe(df, use_container_width=True)
+            user_search = st.text_input(t["search_label"], "", key="user_log_search")
+            user_filtered_df = filter_po_dataframe(df, user_search)
+            st.dataframe(user_filtered_df, use_container_width=True)
 
             po_list = df["PO Number"].dropna().astype(str).tolist()
             if po_list:
@@ -813,7 +847,7 @@ else:
                         st.rerun()
 
             render_pdf_download_bar(
-                df,
+                user_filtered_df if not user_filtered_df.empty else df,
                 t["pdf_section"],
                 t["select_po_pdf"],
                 "user_po_pdf"
