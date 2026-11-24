@@ -62,6 +62,8 @@ TEXTS = {
         "login_btn": "Sign In",
         "logout_btn": "Sign Out",
         "invalid_login": "Invalid username or password.",
+        "invalid_cost": "Please enter a valid non-negative number or NA.",
+        "missing_secret": "GROQ_API_KEY is missing in Streamlit Secrets.",
         "new_po_tab": "➕ Create PO & PDF",
         "history_tab": "📋 PO Log",
         "ai_tab": "🤖 AI Search Assistant",
@@ -78,11 +80,10 @@ TEXTS = {
         "user_email": "Your Email Address (Requester)",
         "supplier_email": "Supplier / Vendor Email Address",
         "requested_by": "Requested By (Your Name)",
-        "generate_and_open_btn": "✉️ Generate PO & Open Email",
+        "generate_btn": "Generate & Save PO",
         "success_msg": "PO Generated and Saved Successfully!",
-        "draft_note": "Pressing Open Email downloads the PDF automatically and opens your email draft. Attach the downloaded PDF before sending.",
-        "open_email_btn": "✉️ Open Email Link (Auto-Download PDF)",
-        "email_triggered_msg": "PDF download started and email draft opened.",
+        "draft_note": "Download the PDF with the PDF button and open your email draft with the supplier address filled in, then attach the PDF before sending.",
+        "open_email_btn": "✉️ Open Email Link",
         "search_label": "Filter by CMO Code or Vendor:",
         "delete_section": "🗑️ Erase a Mistaken PO",
         "select_po_delete": "Select PO Number to erase:",
@@ -117,6 +118,8 @@ TEXTS = {
         "login_btn": "Se connecter",
         "logout_btn": "Se déconnecter",
         "invalid_login": "Nom d'utilisateur ou mot de passe invalide.",
+        "invalid_cost": "Veuillez entrer un montant positif valide ou NA.",
+        "missing_secret": "GROQ_API_KEY est manquant dans les Secrets Streamlit.",
         "new_po_tab": "➕ Créer PO & PDF",
         "history_tab": "📋 Registre PO",
         "ai_tab": "🤖 Assistant Recherche IA",
@@ -133,11 +136,10 @@ TEXTS = {
         "user_email": "Votre courriel (Demandeur)",
         "supplier_email": "Courriel du Fournisseur",
         "requested_by": "Demandé par (Votre nom)",
-        "generate_and_open_btn": "✉️ Générer le PO & Ouvrir Courriel",
+        "generate_btn": "Générer et Enregistrer le PO",
         "success_msg": "PO généré et enregistré avec succès!",
-        "draft_note": "Cliquer sur Ouvrir le lien courriel télécharge le PDF automatiquement et ouvre votre brouillon. Joignez le PDF téléchargé avant d'envoyer.",
-        "open_email_btn": "✉️ Ouvrir le lien courriel (Téléchargement PDF auto)",
-        "email_triggered_msg": "Téléchargement du PDF lancé et brouillon courriel ouvert.",
+        "draft_note": "Téléchargez le PDF avec le bouton PDF et ouvrez votre brouillon courriel avec l'adresse du fournisseur déjà remplie, puis joignez le PDF avant d'envoyer.",
+        "open_email_btn": "✉️ Ouvrir le lien courriel",
         "search_label": "Filtrer par code CMO ou fournisseur:",
         "delete_section": "🗑️ Effacer un PO en cas d'erreur",
         "select_po_delete": "Choisir le numéro de PO à effacer :",
@@ -353,16 +355,14 @@ def build_language_mailto_url(po_data, lang_code):
         body = (
             f"Numéro de PO : {po_num}\n"
             f"Client : {customer_name}\n"
-            f"Ci-joint le bon de commande PDF.\n"
-            f"Merci."
+            f"Ci-joint le bon de commande PDF."
         )
     else:
         subject = f"Purchase Order {po_num} - {customer_name}"
         body = (
             f"PO Number: {po_num}\n"
             f"Customer: {customer_name}\n"
-            f"See PDF PO attached.\n"
-            f"Thank you."
+            f"See PDF PO attached."
         )
 
     params = {"subject": subject, "body": body}
@@ -371,28 +371,49 @@ def build_language_mailto_url(po_data, lang_code):
     query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     return f"mailto:{urllib.parse.quote(to_addr)}?{query}"
 
-def trigger_auto_pdf_and_mailto(po_data, pdf_bytes, lang_code):
-    """Automatically downloads the PDF in the browser and opens the language-matched mailto draft."""
+def render_email_link_button(po_data, pdf_bytes, lang_code, link_label):
+    """Renders a direct top-level mailto link and attempts a Blob PDF download on click."""
     b64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
     filename = f"{po_data.get('PO Number', 'PO')}.pdf"
     mailto_href = build_language_mailto_url(po_data, lang_code)
 
-    html_snippet = f"""
+    html_link = f"""
+    <div style="width: 100%;">
+      <a id="mailto-dl-link" href="{mailto_href}" target="_top"
+         style="display: block; width: 100%; text-align: center; background-color: #581c87;
+                color: #ffffff; font-weight: bold; text-decoration: none;
+                padding: 0.52rem 1rem; border-radius: 8px; box-sizing: border-box;
+                font-family: sans-serif; font-size: 0.95rem;">
+        {link_label}
+      </a>
+    </div>
     <script>
       (function() {{
-        const link = document.createElement('a');
-        link.href = 'data:application/pdf;base64,{b64_pdf}';
-        link.download = '{filename}';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        setTimeout(function() {{
-          window.open('{mailto_href}', '_self');
-        }}, 350);
+        const a = document.getElementById('mailto-dl-link');
+        if (!a) return;
+        a.addEventListener('click', function() {{
+          try {{
+            const byteChars = atob('{b64_pdf}');
+            const byteNumbers = new Array(byteChars.length);
+            for (let i = 0; i < byteChars.length; i++) {{
+              byteNumbers[i] = byteChars.charCodeAt(i);
+            }}
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], {{ type: 'application/pdf' }});
+            const url = URL.createObjectURL(blob);
+            const dl = document.createElement('a');
+            dl.href = url;
+            dl.download = '{filename}';
+            document.body.appendChild(dl);
+            dl.click();
+            document.body.removeChild(dl);
+            setTimeout(function() {{ URL.revokeObjectURL(url); }}, 2000);
+          }} catch (e) {{}}
+        }});
       }})();
     </script>
     """
-    components.html(html_snippet, height=0)
+    components.html(html_link, height=52)
 
 def render_pdf_download_bar(df_source, pdf_label, select_label, key_prefix):
     po_list = df_source["PO Number"].dropna().astype(str).tolist()
@@ -698,9 +719,9 @@ else:
 
             work_reason = st.text_area(t["work_reason"])
 
-            sub_gen_open = st.form_submit_button(t["generate_and_open_btn"], use_container_width=True)
+            sub_gen = st.form_submit_button(t["generate_btn"], use_container_width=True)
 
-        if sub_gen_open:
+        if sub_gen:
             final_vendor = vendor_other if vendor_choice == "Other" else vendor_choice
             final_cat = cat_other if cat_choice == "Other" else cat_choice
             parsed_cost, cost_ok = parse_cost_input(est_cost_raw)
@@ -739,7 +760,6 @@ else:
                     "pdf_bytes": pdf_bytes
                 }
                 st.success(f"{t['success_msg']} **PO #: {po_num}**")
-                trigger_auto_pdf_and_mailto(new_record, pdf_bytes, lang)
 
         if st.session_state.last_created_po:
             created_rec = st.session_state.last_created_po["record"]
@@ -757,9 +777,12 @@ else:
                     use_container_width=True
                 )
             with b_col2:
-                if st.button(t["open_email_btn"], key="open_email_auto_pdf_btn", use_container_width=True):
-                    trigger_auto_pdf_and_mailto(created_rec, created_pdf, lang)
-                    st.caption(t["email_triggered_msg"])
+                render_email_link_button(
+                    created_rec,
+                    created_pdf,
+                    lang,
+                    t["open_email_btn"]
+                )
 
     with tab2:
         st.subheader(t["history_tab"])
