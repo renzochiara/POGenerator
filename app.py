@@ -1,3 +1,4 @@
+import base64
 import io
 import os
 import random
@@ -47,19 +48,6 @@ st.markdown("""
         background-color: #7e22ce;
         color: white;
     }
-    a.mailto-btn {
-        display: inline-block;
-        background-color: #581c87;
-        color: white !important;
-        font-weight: bold;
-        text-decoration: none;
-        padding: 0.5rem 1rem;
-        border-radius: 8px;
-        margin-top: 0.25rem;
-    }
-    a.mailto-btn:hover {
-        background-color: #7e22ce;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -92,8 +80,9 @@ TEXTS = {
         "requested_by": "Requested By (Your Name)",
         "generate_and_open_btn": "✉️ Generate PO & Open Email",
         "success_msg": "PO Generated and Saved Successfully!",
-        "draft_note": "Your email draft opens with the supplier's address filled in. Browser security blocks auto-attaching local files, so attach the downloaded PDF and press Send.",
-        "open_email_link": "✉️ Open My Email Draft Now",
+        "draft_note": "Pressing Open Email downloads the PDF automatically and opens your email draft. Attach the downloaded PDF before sending.",
+        "open_email_btn": "✉️ Open Email Link (Auto-Download PDF)",
+        "email_triggered_msg": "PDF download started and email draft opened.",
         "search_label": "Filter by CMO Code or Vendor:",
         "delete_section": "🗑️ Erase a Mistaken PO",
         "select_po_delete": "Select PO Number to erase:",
@@ -146,8 +135,9 @@ TEXTS = {
         "requested_by": "Demandé par (Votre nom)",
         "generate_and_open_btn": "✉️ Générer le PO & Ouvrir Courriel",
         "success_msg": "PO généré et enregistré avec succès!",
-        "draft_note": "Votre brouillon courriel s'ouvre avec l'adresse du fournisseur déjà remplie. Pour des raisons de sécurité du navigateur, joignez le PDF téléchargé puis envoyez.",
-        "open_email_link": "✉️ Ouvrir mon brouillon courriel maintenant",
+        "draft_note": "Cliquer sur Ouvrir le lien courriel télécharge le PDF automatiquement et ouvre votre brouillon. Joignez le PDF téléchargé avant d'envoyer.",
+        "open_email_btn": "✉️ Ouvrir le lien courriel (Téléchargement PDF auto)",
+        "email_triggered_msg": "Téléchargement du PDF lancé et brouillon courriel ouvert.",
         "search_label": "Filtrer par code CMO ou fournisseur:",
         "delete_section": "🗑️ Effacer un PO en cas d'erreur",
         "select_po_delete": "Choisir le numéro de PO à effacer :",
@@ -351,46 +341,41 @@ def generate_po_pdf_bytes(po_data):
     buffer.seek(0)
     return buffer.getvalue()
 
-def build_mailto_url(po_data):
+def build_language_mailto_url(po_data, lang_code):
+    """Builds a mailto link strictly in EN or FR with PO number, customer/CMO name, and PDF attached note."""
     to_addr = str(po_data.get("Supplier Email", "") or "").strip()
     req_email = str(po_data.get("Requester Email", "") or "").strip()
-    po_num = str(po_data.get("PO Number", "") or "")
-    cmo = str(po_data.get("CMO Code", "") or "")
-    vendor = str(po_data.get("Vendor", "") or "")
-    priority = str(po_data.get("Priority", "") or "")
-    est_cost = str(po_data.get("Estimated Cost ($)", "N/A") or "N/A")
-    req_by = str(po_data.get("Requested By", "") or "")
-    reason = str(po_data.get("Reason", "") or "")
+    po_num = str(po_data.get("PO Number", "") or "").strip()
+    customer_name = str(po_data.get("CMO Code", "") or "").strip()
 
-    subject = f"Indigo Park Canada - Purchase Order {po_num} ({cmo})"
-    body = (
-        f"Hello {vendor},\n\n"
-        f"Please find Purchase Order {po_num} for service work at {cmo}.\n\n"
-        f"Summary:\n"
-        f"- PO Number: {po_num}\n"
-        f"- Date: {po_data.get('Date', '')}\n"
-        f"- CMO Code: {cmo}\n"
-        f"- Category: {po_data.get('Category', '')}\n"
-        f"- Priority: {priority}\n"
-        f"- Estimated Cost ($): {est_cost}\n"
-        f"- Requested By: {req_by} ({req_email})\n"
-        f"- Details: {reason}\n\n"
-        f"(Please attach {po_num}.pdf before sending.)\n\n"
-        f"Thank you,\n"
-        f"Indigo Park Canada"
-    )
+    if lang_code == "FR":
+        subject = f"Bon de commande {po_num} - {customer_name}"
+        body = (
+            f"Numéro de PO : {po_num}\n"
+            f"Client : {customer_name}\n"
+            f"Ci-joint le bon de commande PDF.\n"
+            f"Merci."
+        )
+    else:
+        subject = f"Purchase Order {po_num} - {customer_name}"
+        body = (
+            f"PO Number: {po_num}\n"
+            f"Customer: {customer_name}\n"
+            f"See PDF PO attached.\n"
+            f"Thank you."
+        )
+
     params = {"subject": subject, "body": body}
     if req_email:
         params["cc"] = req_email
     query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     return f"mailto:{urllib.parse.quote(to_addr)}?{query}"
 
-def trigger_auto_pdf_and_mailto(po_data, pdf_bytes):
-    """Triggers automatic browser download of the PDF and opens mailto draft."""
-    import base64
+def trigger_auto_pdf_and_mailto(po_data, pdf_bytes, lang_code):
+    """Automatically downloads the PDF in the browser and opens the language-matched mailto draft."""
     b64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
     filename = f"{po_data.get('PO Number', 'PO')}.pdf"
-    mailto_href = build_mailto_url(po_data)
+    mailto_href = build_language_mailto_url(po_data, lang_code)
 
     html_snippet = f"""
     <script>
@@ -754,7 +739,7 @@ else:
                     "pdf_bytes": pdf_bytes
                 }
                 st.success(f"{t['success_msg']} **PO #: {po_num}**")
-                trigger_auto_pdf_and_mailto(new_record, pdf_bytes)
+                trigger_auto_pdf_and_mailto(new_record, pdf_bytes, lang)
 
         if st.session_state.last_created_po:
             created_rec = st.session_state.last_created_po["record"]
@@ -772,11 +757,9 @@ else:
                     use_container_width=True
                 )
             with b_col2:
-                mailto_href = build_mailto_url(created_rec)
-                st.markdown(
-                    f'<a class="mailto-btn" href="{mailto_href}">{t["open_email_link"]}</a>',
-                    unsafe_allow_html=True
-                )
+                if st.button(t["open_email_btn"], key="open_email_auto_pdf_btn", use_container_width=True):
+                    trigger_auto_pdf_and_mailto(created_rec, created_pdf, lang)
+                    st.caption(t["email_triggered_msg"])
 
     with tab2:
         st.subheader(t["history_tab"])
