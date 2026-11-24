@@ -1,4 +1,3 @@
-import base64
 import io
 import os
 import random
@@ -82,7 +81,7 @@ TEXTS = {
         "requested_by": "Requested By (Your Name)",
         "generate_btn": "Generate & Save PO",
         "success_msg": "PO Generated and Saved Successfully!",
-        "draft_note": "Download the PDF with the PDF button and open your email draft with the supplier address filled in, then attach the PDF before sending.",
+        "draft_note": "Download the PDF with the PDF button and open your email link to launch your email draft with the supplier and user emails filled in, then attach the PDF before sending.",
         "open_email_btn": "✉️ Open Email Link",
         "search_label": "Filter by CMO Code or Vendor:",
         "delete_section": "🗑️ Erase a Mistaken PO",
@@ -138,7 +137,7 @@ TEXTS = {
         "requested_by": "Demandé par (Votre nom)",
         "generate_btn": "Générer et Enregistrer le PO",
         "success_msg": "PO généré et enregistré avec succès!",
-        "draft_note": "Téléchargez le PDF avec le bouton PDF et ouvrez votre brouillon courriel avec l'adresse du fournisseur déjà remplie, puis joignez le PDF avant d'envoyer.",
+        "draft_note": "Téléchargez le PDF avec le bouton PDF et ouvrez le lien courriel pour lancer votre brouillon avec les courriels du fournisseur et de l'utilisateur remplis, puis joignez le PDF avant d'envoyer.",
         "open_email_btn": "✉️ Ouvrir le lien courriel",
         "search_label": "Filtrer par code CMO ou fournisseur:",
         "delete_section": "🗑️ Effacer un PO en cas d'erreur",
@@ -371,15 +370,12 @@ def build_language_mailto_url(po_data, lang_code):
     query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     return f"mailto:{urllib.parse.quote(to_addr)}?{query}"
 
-def render_email_link_button(po_data, pdf_bytes, lang_code, link_label):
-    """Renders a direct top-level mailto link and attempts a Blob PDF download on click."""
-    b64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
-    filename = f"{po_data.get('PO Number', 'PO')}.pdf"
+def render_email_link_button(po_data, lang_code, link_label):
+    """Renders a direct top-level mailto link only (no automatic PDF download)."""
     mailto_href = build_language_mailto_url(po_data, lang_code)
-
     html_link = f"""
     <div style="width: 100%;">
-      <a id="mailto-dl-link" href="{mailto_href}" target="_top"
+      <a href="{mailto_href}" target="_top"
          style="display: block; width: 100%; text-align: center; background-color: #581c87;
                 color: #ffffff; font-weight: bold; text-decoration: none;
                 padding: 0.52rem 1rem; border-radius: 8px; box-sizing: border-box;
@@ -387,31 +383,6 @@ def render_email_link_button(po_data, pdf_bytes, lang_code, link_label):
         {link_label}
       </a>
     </div>
-    <script>
-      (function() {{
-        const a = document.getElementById('mailto-dl-link');
-        if (!a) return;
-        a.addEventListener('click', function() {{
-          try {{
-            const byteChars = atob('{b64_pdf}');
-            const byteNumbers = new Array(byteChars.length);
-            for (let i = 0; i < byteChars.length; i++) {{
-              byteNumbers[i] = byteChars.charCodeAt(i);
-            }}
-            const byteArray = new Uint8Array(byteNumbers);
-            const blob = new Blob([byteArray], {{ type: 'application/pdf' }});
-            const url = URL.createObjectURL(blob);
-            const dl = document.createElement('a');
-            dl.href = url;
-            dl.download = '{filename}';
-            document.body.appendChild(dl);
-            dl.click();
-            document.body.removeChild(dl);
-            setTimeout(function() {{ URL.revokeObjectURL(url); }}, 2000);
-          }} catch (e) {{}}
-        }});
-      }})();
-    </script>
     """
     components.html(html_link, height=52)
 
@@ -779,7 +750,6 @@ else:
             with b_col2:
                 render_email_link_button(
                     created_rec,
-                    created_pdf,
                     lang,
                     t["open_email_btn"]
                 )
