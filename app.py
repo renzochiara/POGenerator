@@ -62,7 +62,8 @@ TEXTS = {
         "invalid_cost": "Please enter a valid non-negative number (e.g. 250.00) or NA.",
         "missing_secret": "GROQ_API_KEY is missing in Streamlit Secrets.",
         "new_po_tab": "➕ Create PO & PDF",
-        "history_tab": "📋 PO Log",
+        "history_tab": "📋 My POs",
+        "admin_history_tab": "📋 PO Log",
         "ai_tab": "🤖 AI Search Assistant",
         "users_tab": "👤 Manage Users",
         "po_details": "PO General Details",
@@ -82,6 +83,7 @@ TEXTS = {
         "draft_note": "Download the PDF with the PDF button and open your email link to launch your email draft with the supplier and user emails filled in, then attach the PDF before sending.",
         "open_email_btn": "✉️ Open Email Link",
         "search_label": "Search POs (PO #, CMO, Vendor, Email, Reason, Requester):",
+        "no_user_pos": "You have not created any POs yet.",
         "delete_section": "🗑️ Erase a Mistaken PO",
         "select_po_delete": "Select PO Number to erase:",
         "delete_po_btn": "Erase Selected PO",
@@ -124,7 +126,8 @@ TEXTS = {
         "invalid_cost": "Veuillez entrer un montant positif valide (ex. 250.00) ou NA.",
         "missing_secret": "GROQ_API_KEY est manquant dans les Secrets Streamlit.",
         "new_po_tab": "➕ Créer PO & PDF",
-        "history_tab": "📋 Registre PO",
+        "history_tab": "📋 Mes PO",
+        "admin_history_tab": "📋 Registre PO",
         "ai_tab": "🤖 Assistant Recherche IA",
         "users_tab": "👤 Gestion Utilisateurs",
         "po_details": "Détails du Bon de Commande",
@@ -144,6 +147,7 @@ TEXTS = {
         "draft_note": "Téléchargez le PDF avec le bouton PDF et ouvrez le lien courriel pour lancer votre brouillon avec les courriels du fournisseur et de l'utilisateur remplis, puis joignez le PDF avant d'envoyer.",
         "open_email_btn": "✉️ Ouvrir le lien courriel",
         "search_label": "Rechercher PO (N° PO, CMO, Fournisseur, Courriel, Raison) :",
+        "no_user_pos": "Vous n'avez encore créé aucun PO.",
         "delete_section": "🗑️ Effacer un PO en cas d'erreur",
         "select_po_delete": "Choisir le numéro de PO à effacer :",
         "delete_po_btn": "Effacer le PO sélectionné",
@@ -179,7 +183,8 @@ TEXTS = {
 COLUMNS = [
     "PO Number", "Date", "CMO Code", "Vendor", "Category",
     "Priority", "Estimated Cost ($)", "Actual Cost ($)",
-    "Requester Email", "Supplier Email", "Reason", "Requested By", "Payment Status"
+    "Requester Email", "Supplier Email", "Reason", "Requested By",
+    "Created By User", "Payment Status"
 ]
 EXCEL_FILE = "po_log.xlsx"
 USERS_FILE = "users_store.json"
@@ -383,8 +388,24 @@ def sanitize_po_dataframe(raw_df):
     for col in COLUMNS:
         df[col] = df[col].apply(lambda x: "" if str(x).strip().lower() == "nan" else str(x).strip())
 
+    # Backfill Created By User from Requested By for older rows when empty
+    missing_owner_mask = df["Created By User"] == ""
+    df.loc[missing_owner_mask, "Created By User"] = df.loc[missing_owner_mask, "Requested By"]
+
     df["Payment Status"] = df["Payment Status"].apply(normalize_payment_status)
     return df
+
+def get_user_owned_pos(df, username):
+    """Returns only POs created by the logged-in user."""
+    if df.empty:
+        return pd.DataFrame(columns=COLUMNS)
+    u = str(username or "").strip().lower()
+    owner_match = df["Created By User"].astype(str).str.strip().str.lower() == u
+    requester_fallback = (
+        (df["Created By User"].astype(str).str.strip() == "")
+        & (df["Requested By"].astype(str).str.strip().str.lower() == u)
+    )
+    return df[owner_match | requester_fallback].copy()
 
 # ==========================================
 # PDF & EMAIL DRAFT HELPERS
@@ -668,7 +689,7 @@ st.caption(t["subtitle"])
 # ADMIN VIEW vs REGULAR USER VIEW
 # ==========================================
 if st.session_state.user_role == "admin":
-    tab_log, tab_ai, tab_users = st.tabs([t["history_tab"], t["ai_tab"], t["users_tab"]])
+    tab_log, tab_ai, tab_users = st.tabs([t["admin_history_tab"], t["ai_tab"], t["users_tab"]])
 
     with tab_log:
         st.subheader(t["admin_audit_title"])
@@ -894,6 +915,7 @@ else:
                     "Supplier Email": supplier_email.strip(),
                     "Reason": work_reason,
                     "Requested By": requested_by,
+                    "Created By User": st.session_state.auth_user.strip(),
                     "Payment Status": "Pending"
                 }
 
@@ -933,13 +955,17 @@ else:
 
     with tab2:
         st.subheader(t["history_tab"])
-        df = load_po_data()
-        if not df.empty:
+        all_df = load_po_data()
+        owned_df = get_user_owned_pos(all_df, st.session_state.auth_user)
+
+        if owned_df.empty:
+            st.info(t["no_user_pos"])
+        else:
             user_search = st.text_input(t["search_label"], "", key="user_log_search")
-            user_filtered_df = filter_po_dataframe(df, user_search)
+            user_filtered_df = filter_po_dataframe(owned_df, user_search)
             st.dataframe(user_filtered_df, use_container_width=True)
 
-            po_list = df["PO Number"].dropna().astype(str).tolist()
+            po_list = owned_df["PO Number"].dropna().astype(str).tolist()
             if po_list:
                 st.markdown("---")
                 st.markdown(f"**{t['delete_section']}**")
@@ -948,13 +974,13 @@ else:
                     po_del = st.selectbox(t["select_po_delete"], po_list, label_visibility="collapsed")
                 with c_del2:
                     if st.button(t["delete_po_btn"], use_container_width=True):
-                        updated_df = df[df["PO Number"].astype(str) != po_del].reset_index(drop=True)
+                        updated_df = all_df[all_df["PO Number"].astype(str) != po_del].reset_index(drop=True)
                         save_po_data(updated_df, f"Erase {po_del}")
                         st.success(f"{t['po_erased_msg']} {po_del}")
                         st.rerun()
 
             render_pdf_download_bar(
-                user_filtered_df if not user_filtered_df.empty else df,
+                user_filtered_df if not user_filtered_df.empty else owned_df,
                 t["pdf_section"],
                 t["select_po_pdf"],
                 "user_po_pdf"
