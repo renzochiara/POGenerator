@@ -1,7 +1,6 @@
 streamlit
 pandas
 openpyxl
-openai
-gspread
-google-auth
+requests
 reportlab
+openai
