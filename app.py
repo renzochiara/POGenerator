@@ -105,6 +105,11 @@ TEXTS = {
         "user_created_msg": "User account created:",
         "user_exists_err": "That username already exists.",
         "user_fields_err": "Please enter both a username and a password.",
+        "delete_user_header": "🗑️ Erase User Account",
+        "select_user_delete": "Select user to erase:",
+        "delete_user_btn": "🗑️ Erase Selected User",
+        "user_deleted_msg": "Erased user account:",
+        "no_deletable_users": "No custom user accounts available to erase.",
         "existing_users_header": "Existing Accounts"
     },
     "FR": {
@@ -162,6 +167,11 @@ TEXTS = {
         "user_created_msg": "Compte utilisateur créé :",
         "user_exists_err": "Ce nom d'utilisateur existe déjà.",
         "user_fields_err": "Veuillez entrer un nom d'utilisateur et un mot de passe.",
+        "delete_user_header": "🗑️ Effacer un compte utilisateur",
+        "select_user_delete": "Choisir l'utilisateur à effacer :",
+        "delete_user_btn": "🗑️ Effacer l'utilisateur sélectionné",
+        "user_deleted_msg": "Compte utilisateur effacé :",
+        "no_deletable_users": "Aucun compte utilisateur personnalisé à effacer.",
         "existing_users_header": "Comptes existants"
     }
 }
@@ -262,12 +272,19 @@ def load_users_store():
                     "role": str(uinfo.get("role", "user"))
                 }
 
+    deleted_users = set(st.session_state.get("deleted_users", []))
+
     gh_users_bytes = github_get_file_bytes(USERS_FILE)
     if gh_users_bytes:
         try:
             loaded = json.loads(gh_users_bytes.decode("utf-8"))
             if isinstance(loaded, dict):
+                gh_deleted = loaded.get("_deleted_users", [])
+                if isinstance(gh_deleted, list):
+                    deleted_users.update(str(u) for u in gh_deleted)
                 for uname, uinfo in loaded.items():
+                    if str(uname) == "_deleted_users":
+                        continue
                     if isinstance(uinfo, dict) and "password" in uinfo:
                         users[str(uname)] = {
                             "password": str(uinfo["password"]),
@@ -280,7 +297,27 @@ def load_users_store():
         for uname, uinfo in st.session_state.custom_users.items():
             users[uname] = dict(uinfo)
 
+    for du in deleted_users:
+        if du not in DEFAULT_USERS and du in users:
+            del users[du]
+
     return users
+
+def _sync_users_to_github(all_users, commit_msg):
+    deleted_users = sorted(
+        u for u in set(st.session_state.get("deleted_users", [])) if u not in DEFAULT_USERS
+    )
+    custom_only = {
+        u: info for u, info in all_users.items() if u not in DEFAULT_USERS
+    }
+    payload_obj = dict(custom_only)
+    if deleted_users:
+        payload_obj["_deleted_users"] = deleted_users
+
+    encoded_json = json.dumps(payload_obj, indent=2).encode("utf-8")
+    ok, err = github_put_file_bytes(USERS_FILE, encoded_json, commit_msg)
+    if not ok and get_github_config() is not None:
+        st.warning(err)
 
 def create_user_account(username, password, role):
     clean_user = str(username).strip()
@@ -289,20 +326,33 @@ def create_user_account(username, password, role):
 
     if "custom_users" not in st.session_state:
         st.session_state.custom_users = {}
+    if "deleted_users" not in st.session_state:
+        st.session_state.deleted_users = set()
 
+    st.session_state.deleted_users.discard(clean_user)
     st.session_state.custom_users[clean_user] = {
         "password": clean_pass,
         "role": clean_role
     }
 
     all_users = load_users_store()
-    custom_only = {
-        u: info for u, info in all_users.items() if u not in DEFAULT_USERS
-    }
-    encoded_json = json.dumps(custom_only, indent=2).encode("utf-8")
-    ok, err = github_put_file_bytes(USERS_FILE, encoded_json, f"Update users store ({clean_user})")
-    if not ok and get_github_config() is not None:
-        st.warning(err)
+    _sync_users_to_github(all_users, f"Create user account ({clean_user})")
+
+def delete_user_account(username):
+    target = str(username or "").strip()
+    if not target or target in DEFAULT_USERS:
+        return False
+
+    if "custom_users" in st.session_state and target in st.session_state.custom_users:
+        del st.session_state.custom_users[target]
+
+    if "deleted_users" not in st.session_state:
+        st.session_state.deleted_users = set()
+    st.session_state.deleted_users.add(target)
+
+    all_users = load_users_store()
+    _sync_users_to_github(all_users, f"Erase user account ({target})")
+    return True
 
 def authenticate(username, password):
     users = load_users_store()
@@ -571,6 +621,8 @@ if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 if "custom_users" not in st.session_state:
     st.session_state.custom_users = {}
+if "deleted_users" not in st.session_state:
+    st.session_state.deleted_users = set()
 if "last_created_po" not in st.session_state:
     st.session_state.last_created_po = None
 if "last_selected_admin_po" not in st.session_state:
@@ -737,6 +789,28 @@ if st.session_state.user_role == "admin":
                 else:
                     create_user_account(clean_u, clean_p, new_urole)
                     st.success(f"{t['user_created_msg']} `{clean_u}` ({new_urole})")
+                    st.rerun()
+
+        st.markdown("---")
+        st.subheader(t["delete_user_header"])
+        users_snapshot = load_users_store()
+        deletable_users = [u for u in users_snapshot.keys() if u not in DEFAULT_USERS]
+        if deletable_users:
+            d_col1, d_col2 = st.columns([3, 1])
+            with d_col1:
+                user_to_erase = st.selectbox(
+                    t["select_user_delete"],
+                    deletable_users,
+                    key="admin_delete_user_select",
+                    label_visibility="collapsed"
+                )
+            with d_col2:
+                if st.button(t["delete_user_btn"], use_container_width=True, key="admin_delete_user_btn"):
+                    if delete_user_account(user_to_erase):
+                        st.success(f"{t['user_deleted_msg']} `{user_to_erase}`")
+                        st.rerun()
+        else:
+            st.info(t["no_deletable_users"])
 
         st.markdown("---")
         st.markdown(f"**{t['existing_users_header']}**")
