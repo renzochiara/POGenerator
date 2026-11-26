@@ -1,10 +1,9 @@
 {
-  "renzo": {
-    "password": "123456",
-    "role": "user"
-  },
   "Michel D.": {
     "password": "123456",
     "role": "admin"
-  }
+  },
+  "_deleted_users": [
+    "renzo"
+  ]
 }
