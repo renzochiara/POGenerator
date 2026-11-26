@@ -1,10 +1,13 @@
+import base64
 import io
+import json
 import os
 import random
 import urllib.parse
 from datetime import datetime
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from reportlab.lib import colors
@@ -17,13 +20,6 @@ try:
     HAS_OPENAI = True
 except ImportError:
     HAS_OPENAI = False
-
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-    HAS_GSHEETS = True
-except ImportError:
-    HAS_GSHEETS = False
 
 # ==========================================
 # PAGE CONFIG & STYLING
@@ -176,6 +172,7 @@ COLUMNS = [
     "Requester Email", "Supplier Email", "Reason", "Requested By", "Payment Status"
 ]
 EXCEL_FILE = "po_log.xlsx"
+USERS_FILE = "users_store.json"
 INDIGO_LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/Indigo_Group_logo.svg/320px-Indigo_Group_logo.svg.png"
 
 DEFAULT_USERS = {
@@ -184,47 +181,75 @@ DEFAULT_USERS = {
 }
 
 # ==========================================
-# GOOGLE SHEETS & USER MANAGEMENT HELPERS
+# GITHUB STORAGE HELPERS
 # ==========================================
-def get_gsheet_spreadsheet():
-    if not HAS_GSHEETS:
+def get_github_config():
+    token = str(st.secrets.get("GITHUB_TOKEN", "") or "").strip()
+    repo = str(st.secrets.get("GITHUB_REPO", "") or "").strip()
+    branch = str(st.secrets.get("GITHUB_BRANCH", "main") or "main").strip()
+    if not token or not repo:
         return None
+    return {"token": token, "repo": repo, "branch": branch}
+
+def github_get_file_bytes(repo_path):
+    cfg = get_github_config()
+    if cfg is None:
+        return None
+    url = f"https://api.github.com/repos/{cfg['repo']}/contents/{repo_path}"
+    headers = {
+        "Authorization": f"Bearer {cfg['token']}",
+        "Accept": "application/vnd.github+json"
+    }
+    params = {"ref": cfg["branch"]}
     try:
-        sheet_id = st.secrets.get("GSHEET_ID", "")
-        sa_info = st.secrets.get("GOOGLE_SERVICE_ACCOUNT", None)
-        if not sheet_id or not sa_info:
-            return None
-        creds = Credentials.from_service_account_info(
-            dict(sa_info),
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
-        )
-        client = gspread.authorize(creds)
-        return client.open_by_key(str(sheet_id).strip())
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            encoded = str(data.get("content", "")).replace("\n", "")
+            if encoded:
+                return base64.b64decode(encoded)
+        return None
     except Exception:
         return None
 
-def get_gsheet_worksheet(title="PO_Log", headers=COLUMNS):
-    spreadsheet = get_gsheet_spreadsheet()
-    if spreadsheet is None:
-        return None
+def github_put_file_bytes(repo_path, content_bytes, commit_message):
+    cfg = get_github_config()
+    if cfg is None:
+        return False, "GitHub secrets not configured."
+
+    url = f"https://api.github.com/repos/{cfg['repo']}/contents/{repo_path}"
+    headers = {
+        "Authorization": f"Bearer {cfg['token']}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    sha = None
     try:
-        try:
-            ws = spreadsheet.worksheet(title)
-        except gspread.WorksheetNotFound:
-            ws = spreadsheet.add_worksheet(title=title, rows=1000, cols=16)
-            ws.append_row(headers)
-            return ws
-
-        existing_vals = ws.get_all_values()
-        if not existing_vals:
-            ws.append_row(headers)
-        elif existing_vals[0] != headers:
-            # Ensure header row matches exact COLUMNS schema so columns never shift
-            ws.update("A1", [headers])
-        return ws
+        get_resp = requests.get(url, headers=headers, params={"ref": cfg["branch"]}, timeout=15)
+        if get_resp.status_code == 200:
+            sha = get_resp.json().get("sha")
     except Exception:
-        return None
+        pass
 
+    payload = {
+        "message": commit_message,
+        "content": base64.b64encode(content_bytes).decode("utf-8"),
+        "branch": cfg["branch"]
+    }
+    if sha:
+        payload["sha"] = sha
+
+    try:
+        put_resp = requests.put(url, headers=headers, json=payload, timeout=15)
+        if put_resp.status_code in (200, 201):
+            return True, None
+        return False, f"GitHub API ({put_resp.status_code}): {put_resp.text}"
+    except Exception as e:
+        return False, f"GitHub sync error: {str(e)}"
+
+# ==========================================
+# USER MANAGEMENT HELPERS
+# ==========================================
 def load_users_store():
     users = {k: dict(v) for k, v in DEFAULT_USERS.items()}
 
@@ -237,15 +262,17 @@ def load_users_store():
                     "role": str(uinfo.get("role", "user"))
                 }
 
-    ws_users = get_gsheet_worksheet("Users", ["Username", "Password", "Role"])
-    if ws_users is not None:
+    gh_users_bytes = github_get_file_bytes(USERS_FILE)
+    if gh_users_bytes:
         try:
-            for row in ws_users.get_all_records():
-                uname = str(row.get("Username", "")).strip()
-                pwd = str(row.get("Password", "")).strip()
-                role = str(row.get("Role", "user")).strip().lower() or "user"
-                if uname and pwd:
-                    users[uname] = {"password": pwd, "role": role}
+            loaded = json.loads(gh_users_bytes.decode("utf-8"))
+            if isinstance(loaded, dict):
+                for uname, uinfo in loaded.items():
+                    if isinstance(uinfo, dict) and "password" in uinfo:
+                        users[str(uname)] = {
+                            "password": str(uinfo["password"]),
+                            "role": str(uinfo.get("role", "user")).lower()
+                        }
         except Exception:
             pass
 
@@ -268,14 +295,14 @@ def create_user_account(username, password, role):
         "role": clean_role
     }
 
-    ws_users = get_gsheet_worksheet("Users", ["Username", "Password", "Role"])
-    if ws_users is not None:
-        all_users = load_users_store()
-        rows = [["Username", "Password", "Role"]] + [
-            [u, info["password"], info["role"]] for u, info in all_users.items()
-        ]
-        ws_users.clear()
-        ws_users.update(rows)
+    all_users = load_users_store()
+    custom_only = {
+        u: info for u, info in all_users.items() if u not in DEFAULT_USERS
+    }
+    encoded_json = json.dumps(custom_only, indent=2).encode("utf-8")
+    ok, err = github_put_file_bytes(USERS_FILE, encoded_json, f"Update users store ({clean_user})")
+    if not ok and get_github_config() is not None:
+        st.warning(err)
 
 def authenticate(username, password):
     users = load_users_store()
@@ -306,7 +333,6 @@ def sanitize_po_dataframe(raw_df):
     for col in COLUMNS:
         df[col] = df[col].apply(lambda x: "" if str(x).strip().lower() == "nan" else str(x).strip())
 
-    # Guard against legacy rows where Payment Status held something non-status
     df["Payment Status"] = df["Payment Status"].apply(normalize_payment_status)
     return df
 
@@ -451,41 +477,44 @@ def parse_cost_input(raw_cost):
     except ValueError:
         return None, False
 
+def dataframe_to_excel_bytes(df):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="PO_Log")
+    buf.seek(0)
+    return buf.getvalue()
+
 def load_po_data():
-    ws = get_gsheet_worksheet("PO_Log", COLUMNS)
-    if ws is not None:
+    gh_bytes = github_get_file_bytes(EXCEL_FILE)
+    if gh_bytes:
         try:
-            all_vals = ws.get_all_values()
-            if len(all_vals) > 1:
-                header = all_vals[0]
-                rows = all_vals[1:]
-                normalized_rows = []
-                for r in rows:
-                    padded = r + [""] * max(0, len(header) - len(r))
-                    row_map = {header[i].strip(): padded[i].strip() for i in range(len(header))}
-                    normalized_rows.append({col: row_map.get(col, "") for col in COLUMNS})
-                return sanitize_po_dataframe(pd.DataFrame(normalized_rows))
-            return pd.DataFrame(columns=COLUMNS)
+            df = pd.read_excel(io.BytesIO(gh_bytes), dtype=str)
+            clean_df = sanitize_po_dataframe(df)
+            clean_df.to_excel(EXCEL_FILE, index=False)
+            return clean_df
         except Exception:
             pass
 
     if os.path.exists(EXCEL_FILE):
-        df = pd.read_excel(EXCEL_FILE, dtype=str)
-        return sanitize_po_dataframe(df)
+        try:
+            df = pd.read_excel(EXCEL_FILE, dtype=str)
+            return sanitize_po_dataframe(df)
+        except Exception:
+            pass
 
     df = pd.DataFrame(columns=COLUMNS)
     df.to_excel(EXCEL_FILE, index=False)
     return df
 
-def save_po_data(df):
+def save_po_data(df, commit_msg="Update po_log.xlsx"):
     clean_df = sanitize_po_dataframe(df)
     clean_df.to_excel(EXCEL_FILE, index=False)
 
-    ws = get_gsheet_worksheet("PO_Log", COLUMNS)
-    if ws is not None:
-        ws.clear()
-        rows = [COLUMNS] + clean_df.fillna("").values.tolist()
-        ws.update("A1", rows)
+    if get_github_config() is not None:
+        excel_bytes = dataframe_to_excel_bytes(clean_df)
+        ok, err = github_put_file_bytes(EXCEL_FILE, excel_bytes, commit_msg)
+        if not ok:
+            st.warning(err)
 
 def generate_po_number():
     today = datetime.now().strftime("%Y%m%d")
@@ -570,6 +599,11 @@ if not st.session_state.user_role:
     st.stop()
 
 st.sidebar.markdown(f"**Logged in as:** `{st.session_state.auth_user}` ({st.session_state.user_role.upper()})")
+if get_github_config() is not None:
+    st.sidebar.caption("☁️ GitHub Sync: Active")
+else:
+    st.sidebar.caption("⚠️ GitHub Sync: Add GITHUB_TOKEN & GITHUB_REPO to Secrets")
+
 if st.sidebar.button(t["logout_btn"], use_container_width=True):
     st.session_state.user_role = None
     st.session_state.auth_user = None
@@ -629,7 +663,6 @@ if st.session_state.user_role == "admin":
                 current_actual = str(current_row.get("Actual Cost ($)", "")).strip()
                 default_actual = "" if current_actual.upper() in ("", "N/A", "NA", "NONE") else current_actual
 
-                # Sync actual cost input whenever user switches to another PO
                 if st.session_state.last_selected_admin_po != selected_po:
                     st.session_state.last_selected_admin_po = selected_po
                     st.session_state.admin_actual_cost_in = default_actual
@@ -661,7 +694,7 @@ if st.session_state.user_role == "admin":
                             if not idx.empty:
                                 df.loc[idx, "Actual Cost ($)"] = parsed_act
                                 df.loc[idx, "Payment Status"] = chosen_category
-                                save_po_data(df)
+                                save_po_data(df, f"Update {selected_po} -> {chosen_category}")
                                 st.success(f"Updated {selected_po} -> {chosen_category}")
                                 st.rerun()
 
@@ -792,7 +825,7 @@ else:
 
                 df = load_po_data()
                 df = pd.concat([pd.DataFrame([new_record]), df], ignore_index=True)
-                save_po_data(df)
+                save_po_data(df, f"Add {po_num}")
 
                 pdf_bytes = generate_po_pdf_bytes(new_record)
                 st.session_state.last_created_po = {
@@ -842,7 +875,7 @@ else:
                 with c_del2:
                     if st.button(t["delete_po_btn"], use_container_width=True):
                         updated_df = df[df["PO Number"].astype(str) != po_del].reset_index(drop=True)
-                        save_po_data(updated_df)
+                        save_po_data(updated_df, f"Erase {po_del}")
                         st.success(f"{t['po_erased_msg']} {po_del}")
                         st.rerun()
 
