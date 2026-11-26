@@ -2,5 +2,9 @@
   "renzo": {
     "password": "123456",
     "role": "user"
+  },
+  "Michel D.": {
+    "password": "123456",
+    "role": "admin"
   }
 }
