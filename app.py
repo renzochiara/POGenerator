@@ -64,7 +64,7 @@ TEXTS = {
         "new_po_tab": "➕ Create PO & PDF",
         "history_tab": "📋 My POs",
         "admin_history_tab": "📋 PO Log",
-        "ai_tab": "🤖 AI Search Assistant",
+        "search_tab": "🔎 Smart Search",
         "users_tab": "👤 Manage Users",
         "po_details": "PO General Details",
         "cmo_code": "CMO / Parking Lot Code",
@@ -91,11 +91,12 @@ TEXTS = {
         "pdf_section": "📄 Download Readable PO PDF",
         "select_po_pdf": "Select PO Number for PDF:",
         "download_pdf_btn": "📄 Download PDF",
-        "ai_header": "Ask AI to Search POs",
-        "ai_placeholder": "e.g., Find all POs for CMO 1851 or calls to Logic Control...",
-        "ai_search_btn": "🔍 Search with AI",
+        "smart_search_header": "Search PO Records",
+        "smart_search_placeholder": "e.g., Find all POs for CMO 1851 or calls to Logic Control...",
+        "smart_search_btn": "🔎 Run Search",
         "admin_audit_title": "⚙️ Admin Audit & Payment Groups",
         "actual_cost_label": "Actual Cost ($ CAD)",
+        "bill_number_label": "Bill / Invoice Number",
         "payment_status_label": "Assign Status Category (Required)",
         "select_category_err": "Please select a payment status category before updating.",
         "update_po_btn": "Update PO & Assign Category",
@@ -128,7 +129,7 @@ TEXTS = {
         "new_po_tab": "➕ Créer PO & PDF",
         "history_tab": "📋 Mes PO",
         "admin_history_tab": "📋 Registre PO",
-        "ai_tab": "🤖 Assistant Recherche IA",
+        "search_tab": "🔎 Recherche Rapide",
         "users_tab": "👤 Gestion Utilisateurs",
         "po_details": "Détails du Bon de Commande",
         "cmo_code": "Code CMO / Code du Stationnement",
@@ -155,11 +156,12 @@ TEXTS = {
         "pdf_section": "📄 Télécharger le PO en PDF lisible",
         "select_po_pdf": "Choisir le numéro de PO pour le PDF :",
         "download_pdf_btn": "📄 Télécharger PDF",
-        "ai_header": "Interroger l'IA sur les PO",
-        "ai_placeholder": "ex: Trouve tous les PO du CMO 1851 ou les appels faits à Logic Control...",
-        "ai_search_btn": "🔍 Rechercher avec l'IA",
+        "smart_search_header": "Rechercher dans les PO",
+        "smart_search_placeholder": "ex: Trouve tous les PO du CMO 1851 ou les appels faits à Logic Control...",
+        "smart_search_btn": "🔎 Lancer la recherche",
         "admin_audit_title": "⚙️ Audit Admin & Groupes de Paiement",
         "actual_cost_label": "Coût Réel ($ CAD)",
+        "bill_number_label": "Numéro de Facture",
         "payment_status_label": "Catégorie de Statut Requise",
         "select_category_err": "Veuillez choisir une catégorie de statut avant de mettre à jour.",
         "update_po_btn": "Mettre à jour & Classer le PO",
@@ -182,7 +184,7 @@ TEXTS = {
 
 COLUMNS = [
     "PO Number", "Date", "CMO Code", "Vendor", "Category",
-    "Priority", "Estimated Cost ($)", "Actual Cost ($)",
+    "Priority", "Estimated Cost ($)", "Actual Cost ($)", "Bill Number",
     "Requester Email", "Supplier Email", "Reason", "Requested By",
     "Created By User", "Payment Status"
 ]
@@ -388,7 +390,6 @@ def sanitize_po_dataframe(raw_df):
     for col in COLUMNS:
         df[col] = df[col].apply(lambda x: "" if str(x).strip().lower() == "nan" else str(x).strip())
 
-    # Backfill Created By User from Requested By for older rows when empty
     missing_owner_mask = df["Created By User"] == ""
     df.loc[missing_owner_mask, "Created By User"] = df.loc[missing_owner_mask, "Requested By"]
 
@@ -452,6 +453,7 @@ def generate_po_pdf_bytes(po_data):
         [Paragraph("<b>Priority Level</b>", cell_style), Paragraph(str(po_data.get("Priority", "")), cell_style)],
         [Paragraph("<b>Estimated Cost ($)</b>", cell_style), Paragraph(str(po_data.get("Estimated Cost ($)", "N/A")), cell_style)],
         [Paragraph("<b>Actual Cost ($)</b>", cell_style), Paragraph(str(po_data.get("Actual Cost ($)", "N/A")), cell_style)],
+        [Paragraph("<b>Bill / Invoice Number</b>", cell_style), Paragraph(str(po_data.get("Bill Number", "N/A") or "N/A"), cell_style)],
         [Paragraph("<b>Requested By</b>", cell_style), Paragraph(str(po_data.get("Requested By", "")), cell_style)],
         [Paragraph("<b>Requester Email</b>", cell_style), Paragraph(str(po_data.get("Requester Email", "")), cell_style)],
         [Paragraph("<b>Supplier Email</b>", cell_style), Paragraph(str(po_data.get("Supplier Email", "")), cell_style)],
@@ -592,28 +594,28 @@ def generate_po_number():
     rand_id = random.randint(1000, 9999)
     return f"PO-{today}-{rand_id}"
 
-def query_groq_ai(query, df, missing_secret_msg):
+def query_smart_search(query, df, missing_secret_msg):
     if df.empty:
         return "No PO records exist in the log yet."
 
+    local_matches = filter_po_dataframe(df, query)
     api_key = st.secrets.get("GROQ_API_KEY", "") if "GROQ_API_KEY" in st.secrets else ""
-    if not api_key:
-        return f"⚠️ {missing_secret_msg}"
-
-    if not HAS_OPENAI:
-        return "⚠️ The `openai` package is not installed. Add `openai` to `requirements.txt`."
+    if not api_key or not HAS_OPENAI:
+        if local_matches.empty:
+            return "No matching PO records found."
+        return local_matches.to_string(index=False)
 
     context_str = df.to_string(index=False)
 
     try:
         client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
         prompt = f"""
-        You are an operational PO search assistant for Indigo Park Canada.
+        You are an operational PO lookup assistant for Indigo Park Canada.
         Dataset:
         {context_str}
 
-        User Question: {query}
-        Answer clearly and concisely.
+        User Query: {query}
+        Return matching PO numbers, vendors, CMO codes, costs, bill numbers, and statuses clearly and concisely.
         """
         response = client.chat.completions.create(
             model="openai/gpt-oss-20b",
@@ -622,7 +624,9 @@ def query_groq_ai(query, df, missing_secret_msg):
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"⚠️ Groq API Error: {str(e)}"
+        if not local_matches.empty:
+            return local_matches.to_string(index=False)
+        return f"Search error: {str(e)}"
 
 def filter_po_dataframe(df, query_text):
     q = str(query_text or "").strip().lower()
@@ -689,7 +693,7 @@ st.caption(t["subtitle"])
 # ADMIN VIEW vs REGULAR USER VIEW
 # ==========================================
 if st.session_state.user_role == "admin":
-    tab_log, tab_ai, tab_users = st.tabs([t["admin_history_tab"], t["ai_tab"], t["users_tab"]])
+    tab_log, tab_search, tab_users = st.tabs([t["admin_history_tab"], t["search_tab"], t["users_tab"]])
 
     with tab_log:
         st.subheader(t["admin_audit_title"])
@@ -724,21 +728,23 @@ if st.session_state.user_role == "admin":
                 )
 
             st.markdown("---")
-            st.markdown("### Update PO & Assign Category")
+            st.markdown("### Update PO, Bill Number & Category")
             all_po_list = df["PO Number"].dropna().astype(str).tolist()
 
             if all_po_list:
-                c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
+                c1, c2, c3, c4, c5 = st.columns([2, 1.5, 1.5, 2, 2])
                 with c1:
                     selected_po = st.selectbox("Select PO Number", all_po_list, key="admin_update_po_select")
 
                 current_row = df[df["PO Number"].astype(str) == selected_po].iloc[0]
                 current_actual = str(current_row.get("Actual Cost ($)", "")).strip()
                 default_actual = "" if current_actual.upper() in ("", "N/A", "NA", "NONE") else current_actual
+                current_bill = str(current_row.get("Bill Number", "")).strip()
 
                 if st.session_state.last_selected_admin_po != selected_po:
                     st.session_state.last_selected_admin_po = selected_po
                     st.session_state.admin_actual_cost_in = default_actual
+                    st.session_state.admin_bill_number_in = current_bill
 
                 with c2:
                     actual_cost_in = st.text_input(
@@ -747,6 +753,12 @@ if st.session_state.user_role == "admin":
                         key="admin_actual_cost_in"
                     )
                 with c3:
+                    bill_number_in = st.text_input(
+                        t["bill_number_label"],
+                        placeholder="e.g. INV-9842",
+                        key="admin_bill_number_in"
+                    )
+                with c4:
                     category_options = ["— Select Category —"] + PAYMENT_CATEGORIES
                     chosen_category = st.selectbox(
                         t["payment_status_label"],
@@ -754,7 +766,7 @@ if st.session_state.user_role == "admin":
                         index=0,
                         key="admin_payment_cat_select"
                     )
-                with c4:
+                with c5:
                     st.markdown("<div style='padding-top: 25px;'></div>", unsafe_allow_html=True)
                     if st.button(t["update_po_btn"], use_container_width=True, key="admin_update_po_btn"):
                         parsed_act, act_ok = parse_cost_input(actual_cost_in)
@@ -766,6 +778,7 @@ if st.session_state.user_role == "admin":
                             idx = df[df["PO Number"].astype(str) == selected_po].index
                             if not idx.empty:
                                 df.loc[idx, "Actual Cost ($)"] = parsed_act
+                                df.loc[idx, "Bill Number"] = str(bill_number_in or "").strip()
                                 df.loc[idx, "Payment Status"] = chosen_category
                                 save_po_data(df, f"Update {selected_po} -> {chosen_category}")
                                 st.success(f"Updated {selected_po} -> {chosen_category}")
@@ -778,14 +791,14 @@ if st.session_state.user_role == "admin":
                     "admin_po_pdf"
                 )
 
-    with tab_ai:
-        st.subheader(t["ai_tab"])
-        ai_query = st.text_input(t["ai_header"], placeholder=t["ai_placeholder"])
-        if st.button(t["ai_search_btn"], use_container_width=True):
-            if ai_query:
+    with tab_search:
+        st.subheader(t["search_tab"])
+        search_input = st.text_input(t["smart_search_header"], placeholder=t["smart_search_placeholder"])
+        if st.button(t["smart_search_btn"], use_container_width=True):
+            if search_input:
                 df = load_po_data()
-                with st.spinner("Analyzing POs..."):
-                    st.markdown(query_groq_ai(ai_query, df, t["missing_secret"]))
+                with st.spinner("Searching POs..."):
+                    st.markdown(query_smart_search(search_input, df, t["missing_secret"]))
 
     with tab_users:
         st.subheader(t["create_user_header"])
@@ -911,6 +924,7 @@ else:
                     "Priority": priority,
                     "Estimated Cost ($)": parsed_cost,
                     "Actual Cost ($)": "N/A",
+                    "Bill Number": "",
                     "Requester Email": requester_email.strip(),
                     "Supplier Email": supplier_email.strip(),
                     "Reason": work_reason,
